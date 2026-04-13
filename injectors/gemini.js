@@ -7,12 +7,12 @@
   const payload = session.prelabPayload;
   const myTabId = await getMyTabId();
 
-  if (!payload)                              { console.log('[PrelabAI] No payload – skip.'); return; }
+  if (!payload)                              { console.log('[Prelab] No payload – skip.'); return; }
   if (payload.ai !== 'gemini')               { return; }
-  if (session.pendingTabId !== myTabId)      { console.log('[PrelabAI] Tab ID mismatch – skip.'); return; }
+  if (session.pendingTabId !== myTabId)      { console.log('[Prelab] Tab ID mismatch – skip.'); return; }
 
   await chrome.storage.local.remove(['prelabPayload', 'pendingTabId']);
-  console.log('[PrelabAI] Payload received, type:', payload.type);
+  console.log('[Prelab] Payload received, type:', payload.type);
 
   // ── Status-UI overlay ──────────────────────────────────────────────────────
   const ui = buildGeminiUI();
@@ -93,15 +93,25 @@ INSTRUKSI WAJIB – HANYA BALAS DENGAN 1 BLOK JSON INI, TIDAK ADA TEKS LAIN:
 { "jawaban": "[TEKS_JAWABAN]", "index_pilihan": [NOMOR] }
 \`\`\`
 Aturan pengisian:
-- Soal PILIHAN GANDA → "jawaban": teks opsi PERSIS seperti tertulis (tanpa huruf "A."), "index_pilihan": urutan opsi dari atas (1/2/3/4/5).
-- Soal ISIAN / KODING → "jawaban": isi/kode lengkap persis (gunakan \\n untuk baris baru), "index_pilihan": 0.
-DILARANG menulis analisis, penjelasan, atau teks apapun di luar blok JSON.`;
+- Soal PILIHAN GANDA (1 jawaban) → "jawaban": teks opsi PERSIS seperti tertulis di layar, "index_pilihan": urutan opsi (1/2/3).
+- Soal PILIHAN GANDA MULTI-SELECT (Pilih satu atau lebih!) → "jawaban": ["teks opsi 1", "teks opsi 2"], "index_pilihan": 0.
+- Soal TRUE/FALSE → "jawaban": "True" atau "False", "index_pilihan": 1 atau 2.
+- Soal ISIAN SINGKAT / NUMERIK / CLOZE (Banyak Kolom) → "jawaban": jawaban presisi. JIKA soal memiliki LEBIH DARI SATU kotak isian kosong, WAJIB jadikan "jawaban" sebagai Array of Strings sesuai urutan kotak, misal: ["isi 1", "isi 2"]. Jika hanya 1 kotak, cukup string biasa.
+- Soal KODING/CODING → "jawaban": SELURUH kode program LENGKAP dari baris pertama sampai terakhir (gunakan \\n untuk baris baru), "index_pilihan": 0.
+  PENTING untuk KODING: Jika ada kode template, SERTAKAN juga template tersebut dalam jawaban. Jangan hapus kode template-nya.
+- Soal ESSAY → "jawaban": jawaban lengkap, "index_pilihan": 0.
+PENTING: Untuk pilihan ganda, jawaban HARUS PERSIS sama dengan teks opsi yang terlihat di screenshot. Moodle melakukan exact matching.
+DILARANG menulis analisis atau penjelasan teks apapun di luar blok JSON.`;
 }
 
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
 async function observeAndExtractJson(setGStatus, isAborted) {
   let ticks = 0;
   const MAX_TICKS = 240; // 4 menit
+
+  const existingBubbleCount = document.querySelectorAll(
+    'model-response, .model-response-text, [data-message-author-role="model"], message-content'
+  ).length;
   
   return new Promise(resolve => {
     const timer = setInterval(() => {
@@ -111,7 +121,8 @@ async function observeAndExtractJson(setGStatus, isAborted) {
       const bubbles = document.querySelectorAll(
         'model-response, .model-response-text, [data-message-author-role="model"], message-content'
       );
-      const node  = bubbles.length > 0 ? bubbles[bubbles.length - 1] : document.body;
+      if (bubbles.length <= existingBubbleCount) { tick(); return; }
+      const node  = bubbles[bubbles.length - 1];
       const text  = node.innerText || node.textContent || '';
       if (text.length < 5) return;
 
@@ -128,29 +139,52 @@ async function observeAndExtractJson(setGStatus, isAborted) {
       let safe = block
         .replace(/[""]/g, '"')
         .replace(/['']/g, "'")
-        .replace(/\\'/g, "'");
+        .replace(/\\'/g, "'")
+        .replace(/\\n/g, '\\n'); // escape literal newlines
 
       let jawaban = '', index_pilihan = 0, ok = false;
 
       try {
         const obj = JSON.parse(safe);
-        jawaban        = String(obj.jawaban ?? '').trim();
+        jawaban        = Array.isArray(obj.jawaban) ? obj.jawaban : String(obj.jawaban ?? '').trim();
         index_pilihan  = Number(obj.index_pilihan ?? 0);
         ok             = true;
-      } catch {
-        // Fallback regex jika JSON.parse gagal (misal trailing comma, dll)
-        const jm = block.match(/jawaban["'\s]*:\s*([^\n,}]{1,500})/i);
-        const im = block.match(/index_pilihan["'\s]*:\s*(\d+)/i);
-        if (jm) {
-          jawaban       = jm[1].replace(/^["'\u201c\u2018]|["'\u201d\u2019]$/g, '').trim();
-          index_pilihan = im ? parseInt(im[1]) : 0;
-          ok            = true;
+      } catch (err) {
+        // Fallback cerdas untuk memperbaiki JSON yang cacat
+        try {
+           // Bersihkan markdown atau anomali
+           const fixedJson = safe
+             .replace(/,\s*}/g, '}') // trailing comma
+             .replace(/,\s*]/g, ']') // trailing array comma
+             .replace(/(["\]}])\s*\n\s*(["\[{])/g, '$1,\n$2'); // missing comma between blocks
+           
+           // Bisa juga pakai regex penarik agresif jika parse tetap gagal
+           const jmArray = safe.match(/"jawaban"\s*:\s*\[([\s\S]*?)\]/i);
+           const jmString = safe.match(/"jawaban"\s*:\s*"([\s\S]*?)"(?=\s*,\s*"index_pilihan"|\s*\})/i);
+           const im = safe.match(/"index_pilihan"\s*:\s*(\d+)/i);
+
+           if (jmArray) {
+             // Kalau array, pecah manual lewat regex yang agak aman
+             let arrTxt = jmArray[1];
+             let elements = [...arrTxt.matchAll(/"([\s\S]*?)"/g)].map(m => m[1]);
+             jawaban = elements;
+             index_pilihan = im ? parseInt(im[1]) : 0;
+             ok = elements.length > 0;
+           } else if (jmString) {
+             jawaban = jmString[1];
+             index_pilihan = im ? parseInt(im[1]) : 0;
+             ok = true;
+           }
+        } catch (e2) {
+           console.warn("[Prelab] Fatal fallback json:", e2);
         }
       }
 
-      if (ok && jawaban && jawaban.toLowerCase() !== 'null' && jawaban.toLowerCase() !== 'undefined') {
+      const isNullish = typeof jawaban === 'string' && (jawaban.toLowerCase() === 'null' || jawaban.toLowerCase() === 'undefined');
+      if (ok && jawaban && !isNullish) {
         clearInterval(timer);
-        const preview = jawaban.length > 25 ? '(koding/isian panjang)' : jawaban;
+        const displayJaw = Array.isArray(jawaban) ? jawaban.join(', ') : jawaban;
+        const preview = displayJaw.length > 40 ? '(jawaban multiselect / format panjang)' : displayJaw;
         setGStatus(`🧩 Jawaban: <b>${preview}</b>${index_pilihan ? ` · opsi ke-${index_pilihan}` : ''}`, 100);
         chrome.runtime.sendMessage({ action: 'SOLVER_JSON_RESULT', data: { jawaban, index_pilihan } });
         resolve();
@@ -160,11 +194,12 @@ async function observeAndExtractJson(setGStatus, isAborted) {
       tick();
       function tick() {
         ticks++;
-        // Live countdown tiap 30 detik agar user tahu bot masih hidup
-        if (ticks % 30 === 0 && ticks < MAX_TICKS) {
+        // Live countdown setiap detik
+        if (ticks < MAX_TICKS) {
           const mnt = Math.floor(ticks / 60);
           const dtk = ticks % 60;
-          setGStatus(`⏳ AI sedang berpikir... ${mnt}m ${dtk}s / 4m`, Math.round(ticks / MAX_TICKS * 85));
+          const pct = Math.min(90, 10 + Math.round(ticks / MAX_TICKS * 80));
+          setGStatus(`⏳ AI sedang berpikir... ${mnt}m ${String(dtk).padStart(2, '0')}s / 4m`, pct);
         }
         if (ticks > MAX_TICKS) {
           clearInterval(timer);
@@ -208,7 +243,7 @@ async function injectText(el, text) {
     return true;
   } catch { /**/ }
 
-  console.warn('[PrelabAI] All text-inject methods failed.');
+  console.warn('[Prelab] All text-inject methods failed.');
   return false;
 }
 
@@ -338,7 +373,7 @@ function buildGeminiUI() {
   });
   root.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <span style="font-weight:700;font-size:14px;color:#32d74b;text-shadow:0 0 10px rgba(50,215,75,0.35);">🚀 PrelabAI</span>
+      <span style="font-weight:700;font-size:14px;color:#32d74b;text-shadow:0 0 10px rgba(50,215,75,0.35);">🚀 Prelab</span>
       <button id="_gem-stop" style="background:rgba(255,69,58,.15);border:1px solid #ff453a;border-radius:6px;color:#ff453a;padding:3px 9px;font-size:11px;font-weight:700;cursor:pointer;">🛑 STOP</button>
     </div>
     <div id="_gem-status" style="color:#e5e5ea;font-size:12px;line-height:1.5;margin-bottom:10px;"><i>⏳ Menyiapkan…</i></div>

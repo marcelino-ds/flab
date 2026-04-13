@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PrelabAI",
-  "version": "1.2.0",
-  "description": "Auto-solve soal LMS via Gemini — pilihan ganda, isian, dan koding.",
+  "name": "Prelab",
+  "version": "2.0.0",
+  "description": "Auto-solve soal praktikum Gunadarma (iLab) via Gemini.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -13,7 +13,9 @@
     "clipboardRead"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://praktikum.gunadarma.ac.id/*",
+    "https://v-class.gunadarma.ac.id/*",
+    "https://gemini.google.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -23,9 +25,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": [
+        "https://praktikum.gunadarma.ac.id/*",
+        "https://v-class.gunadarma.ac.id/*"
+      ],
       "js": ["content.js"],
-      "run_at": "document_start"
+      "run_at": "document_idle"
     },
     {
       "matches": ["https://gemini.google.com/*"],
