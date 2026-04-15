@@ -3,14 +3,12 @@
 
 const $ = id => document.getElementById(id);
 
-// Keys sesi yang harus di-reset saat memulai proses baru
 const SESSION_KEYS = [
   'solveRetryCount', 'precheckError', 'precheckCode',
   'precheckRetryCount', 'pendingTabId', 'prelabPayload',
 ];
 
-// ── Platform detection ────────────────────────────────────────────────────────
-const LMS_HOSTS = {
+const LMS_PLATFORMS = {
   'praktikum.gunadarma.ac.id': 'ilab',
   'v-class.gunadarma.ac.id':   'vclass',
 };
@@ -20,7 +18,7 @@ async function detectPlatform() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url) return { platform: 'unknown', tab };
     const host = new URL(tab.url).hostname;
-    return { platform: LMS_HOSTS[host] || 'unknown', tab };
+    return { platform: LMS_PLATFORMS[host] || 'unknown', tab };
   } catch {
     return { platform: 'unknown', tab: null };
   }

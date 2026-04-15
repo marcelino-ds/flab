@@ -1,7 +1,16 @@
 // ── Gemini injector ─────────────────────────────────────────────────────────
 'use strict';
 
-// ── Bootstrap ─────────────────────────────────────────────────────────────────
+const MAX_TICKS = 240;
+const TICK_INTERVAL_MS = 1000;
+const INITIAL_DELAY_MS = 600;
+const UI_REMOVE_DELAY_MS = 4000;
+const FILE_INPUT_WAIT_MS = 4000;
+const EDITOR_WAIT_MS = 20000;
+const TEXT_INJECT_DELAY_MS = 350;
+const IMAGE_LOAD_DELAY_MS = 2000;
+const PASTE_DELAY_MS = 3000;
+const PROMPT_WAIT_MS = 5000;
 (async () => {
   const session = await chrome.storage.local.get(['prelabPayload', 'pendingTabId']);
   const payload = session.prelabPayload;
@@ -39,7 +48,7 @@
     document.querySelector('div[aria-label*="message" i][contenteditable="true"]') ||
     document.querySelector('rich-textarea div[contenteditable="true"]') ||
     document.querySelector('div[contenteditable="true"]')
-  , 20000);
+  , EDITOR_WAIT_MS);
 
   if (!inputEl) {
     setGStatus('❌ Editor Gemini tidak ditemukan.', 100, '#ff453a');
@@ -52,9 +61,14 @@
   // ── Dispatch payload type ──────────────────────────────────────────────────
   const autoSolveRules = buildAutoSolveRules();
 
-  if (payload.type === 'text') {
+  if (payload.type === 'solve_text') {
+    setGStatus('Menempelkan teks soal…', 50);
+    const textPrompt = (payload.prompt || '') + '\n\nBerikut soalnya:\n\n' + payload.text + '\n' + autoSolveRules;
+    await injectText(inputEl, textPrompt);
+  } else if (payload.type === 'text') {
     setGStatus('Menempelkan teks…', 50);
-    await injectText(inputEl, buildTextPrompt(payload));
+    const textPrompt = (payload.prompt ? payload.prompt + '\n\nBerikut soalnya:\n\n' : 'Jawab soal berikut secara lengkap:\n\n') + payload.text;
+    await injectText(inputEl, textPrompt);
   } else if (payload.type === 'batch_images') {
     setGStatus(`Memuat ${payload.dataUrls.length} gambar…`, 20);
     await injectMultipleImages(inputEl, payload.dataUrls, payload.prompt, setGStatus, () => aborted);
@@ -68,7 +82,7 @@
 
   if (aborted) return;
   setGStatus('🚀 Mengirim…', 85);
-  await sleep(600);
+  await sleep(INITIAL_DELAY_MS);
 
   // Ambil jumlah bubble SEBELUM klik send agar tahu mana bubble respons yang baru
   const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-author-role="model"], message-content';
@@ -82,7 +96,8 @@
   }
 
   setGStatus('⏳ Menunggu respons AI…', 90);
-  if (payload.type === 'solve_image') {
+  const needsJsonResponse = payload.type === 'solve_image' || payload.type === 'solve_text';
+  if (needsJsonResponse) {
     await observeAndExtractJson(setGStatus, () => aborted, initialBubbleCount);
   } else {
     setTimeout(() => ui.root.remove(), 4000);
@@ -112,58 +127,42 @@ DILARANG menulis analisis atau penjelasan teks apapun di luar blok JSON.`;
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
 async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1) {
   let ticks = 0;
-  const MAX_TICKS = 240; // 4 menit
 
   const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-author-role="model"], message-content';
   
-  // Jika tidak di-supply, ambil jumlah bubble sekarang
   const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(BUBBLE_SELECTOR).length;
 
   return new Promise(resolve => {
     const timer = setInterval(() => {
       if (isAborted?.()) { clearInterval(timer); resolve(); return; }
 
-      // Ambil bubble respons AI terakhir (bukan seluruh page agar tidak nyangkut di history)
       const bubbles = document.querySelectorAll(BUBBLE_SELECTOR);
       if (bubbles.length <= existingBubbleCount) { tick(); return; }
       const node  = bubbles[bubbles.length - 1];
       const text  = node.innerText || node.textContent || '';
       if (text.length < 5) return;
 
-      // ABAIKAN jika instruksi masih merepet soal prompt kita
       if (text.includes('[TEKS_JAWABAN]') || text.includes('[NOMOR]')) { tick(); return; }
 
-      // STRATEGI ABSOLUT: Cari kata kunci terakhir "jawaban" di dalam respons stream AI
       const jPos = text.lastIndexOf('"jawaban"');
       if (jPos === -1) { tick(); return; }
 
-      // Cari posisi KITA BENAR-BENAR BERADA DI DALAM OBJEK JSON (ABAIKAN KODE DI AWAL RESPON!)
       const s = text.lastIndexOf('{', jPos);
       const e = text.lastIndexOf('}');
       if (s === -1 || e <= s) { tick(); return; }
 
       const block = text.slice(s, e + 1);
 
-      // Normalisasi
       let safe = block
         .replace(/[\u201C\u201D\u201F]/g, '"')
         .replace(/[\u2018\u2019]/g, "'");
 
       let jawaban = '', index_pilihan = 0, ok = false;
       try {
-         // Agar literal newline \n (misal dari "innerText") yang berada **di dalam string jawaban** 
-         // tidak merusak JSON.parse, kita gunakan trik aman dengan regex fallback jika gagal:
-         
-         // 1. Coba parse murni (Berhasil jika JSON stream dari Gemini diformat sempurna (Seringkali begitu)).
          let obj;
          try {
              obj = JSON.parse(safe);
          } catch(err) {
-             // 2. Jika gagal karena literal newline, kita amankan:
-             let sanitized = safe.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
-             // Kembalikan newline/whitespace di luar string "jawaban": "..." ke bentuk riil:
-             sanitized = sanitized.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, ''); 
-             // Trik: JSON parsing manual pakai regex (paling ampuh)
              const matchArr = safe.match(/"jawaban"\s*:\s*\[([\s\S]*?)\]\s*(?:,\s*"index_pilihan"|\})/i);
              const matchStr = safe.match(/"jawaban"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"index_pilihan"|\})/i);
              const matchIdx = safe.match(/"index_pilihan"\s*:\s*(\d+)/i);
@@ -187,7 +186,7 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
          index_pilihan = Number(obj.index_pilihan ?? 0);
          ok = true;
       } catch (e2) {
-         // Silently fail, it will just loop again until parsing succeeds (AI output completes)
+         // Silently fail, loop again until parsing succeeds
       }
 
       const isNullish = typeof jawaban === 'string' && (jawaban.toLowerCase() === 'null' || jawaban.toLowerCase() === 'undefined');
@@ -215,10 +214,10 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
           clearInterval(timer);
           setGStatus('⏰ Timeout! Meminta LMS untuk retry soal ini...', 100, '#ff9f0a');
           chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
-          setTimeout(() => resolve(), 1500);
+          setTimeout(() => resolve(), INITIAL_DELAY_MS + 900);
         }
       }
-    }, 1000);
+    }, TICK_INTERVAL_MS);
   });
 }
 
@@ -232,15 +231,14 @@ async function injectText(el, text) {
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
     el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
-    await sleep(350);
+    await sleep(TEXT_INJECT_DELAY_MS);
     if (el.textContent.trim().length > 0) return true;
   } catch { /**/ }
 
-  // Method 2: execCommand
+  // Method 2: Input event
   try {
-    document.execCommand('insertText', false, text);
     el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
-    await sleep(350);
+    await sleep(TEXT_INJECT_DELAY_MS);
     if (el.textContent.trim().length > 0) return true;
   } catch { /**/ }
 
@@ -268,7 +266,7 @@ async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, 
 
   const fileInput = await waitFor(
     () => document.querySelector('input[type="file"][accept*="image"]') || document.querySelector('input[type="file"]'),
-    4000
+    FILE_INPUT_WAIT_MS
   );
 
   if (fileInput) {
@@ -280,7 +278,7 @@ async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, 
     inputEl.focus();
     inputEl.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
   }
-  await sleep(2000);
+  await sleep(IMAGE_LOAD_DELAY_MS);
 
   if (isAborted()) return;
   if (promptText) {
@@ -288,7 +286,7 @@ async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, 
     const freshEl = await waitFor(
       () => document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
             document.querySelector('.ql-editor[contenteditable="true"]'),
-      5000
+      PROMPT_WAIT_MS
     );
     if (freshEl) await injectText(freshEl, '\n' + promptText);
   }
@@ -311,7 +309,7 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
 
   const fileInput = await waitFor(
     () => document.querySelector('input[type="file"][accept*="image"]') || document.querySelector('input[type="file"]'),
-    4000
+    FILE_INPUT_WAIT_MS
   );
 
   if (fileInput) {
@@ -321,7 +319,7 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
     inputEl.focus();
     inputEl.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
   }
-  await sleep(3000);
+  await sleep(PASTE_DELAY_MS);
 
   if (isAborted?.()) return;
   if (promptText) {
@@ -329,7 +327,7 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
     const freshEl = await waitFor(
       () => document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
             document.querySelector('.ql-editor[contenteditable="true"]'),
-      5000
+      PROMPT_WAIT_MS
     );
     if (freshEl) await injectText(freshEl, '\n' + promptText);
   }
@@ -399,8 +397,12 @@ function buildGeminiUI() {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
-function buildTextPrompt({ text, prompt }) {
-  return (prompt ? prompt + '\n\nBerikut soalnya:\n\n' : 'Jawab soal berikut secara lengkap:\n\n') + text;
+function buildTextPrompt({ text, prompt, withSolveRules = false }) {
+  const basePrompt = (prompt ? prompt + '\n\nBerikut soalnya:\n\n' : 'Jawab soal berikut secara lengkap:\n\n') + text;
+  if (withSolveRules) {
+    return basePrompt + autoSolveRules;
+  }
+  return basePrompt;
 }
 
 function dataURLtoBlob(dataUrl) {

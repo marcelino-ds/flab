@@ -65,7 +65,7 @@ if (!window.__prelabAI) {
   // Restore UI jika halaman baru dimuat dan sesi masih berjalan
   chrome.storage.local.get(['isBatching', 'ai', 'batchPrompt'], d => {
     if (!d.isBatching) return;
-    waitForBody(() =>
+    waitForBody(POLL_INTERVALS.BODY_WAIT, () =>
       renderUI(d.ai ?? 'gemini', d.batchPrompt ?? '')
     );
   });
@@ -75,17 +75,17 @@ if (!window.__prelabAI) {
 function detectPlatform() {
   const host = location.hostname;
   if (host.includes('praktikum.gunadarma.ac.id')) return 'ilab';
-  if (host.includes('v-class.gunadarma.ac.id'))   return 'vclass';
+  if (host.includes('v-class.gunadarma.ac.id')) return 'vclass';
   return 'generic';
 }
 
 // ── Moodle Quiz Detection ──────────────────────────────────────────────────────
 function detectMoodleQuiz() {
-  const onQuizPage    = !!document.querySelector('.que, #responseform, .quiz-attempt');
-  const hasQuestions   = document.querySelectorAll('.que').length > 0;
-  const isAttemptPage  = location.pathname.includes('/mod/quiz/attempt.php');
-  const isSummaryPage  = location.pathname.includes('/mod/quiz/summary.php');
-  const isReviewPage   = location.pathname.includes('/mod/quiz/review.php');
+  const onQuizPage = !!document.querySelector('.que, #responseform, .quiz-attempt');
+  const hasQuestions = document.querySelectorAll('.que').length > 0;
+  const isAttemptPage = location.pathname.includes('/mod/quiz/attempt.php');
+  const isSummaryPage = location.pathname.includes('/mod/quiz/summary.php');
+  const isReviewPage = location.pathname.includes('/mod/quiz/review.php');
 
   return {
     isQuiz: onQuizPage || isAttemptPage,
@@ -101,18 +101,18 @@ function detectMoodleQuiz() {
 function detectQuestionType(queEl) {
   if (!queEl) return 'unknown';
   const cl = queEl.classList;
-  if (cl.contains('multichoice'))  return 'multichoice';
+  if (cl.contains('multichoice')) return 'multichoice';
   if (cl.contains('shortanswer')) return 'shortanswer';
-  if (cl.contains('essay'))       return 'essay';
-  if (cl.contains('coderunner'))  return 'coderunner';
-  if (cl.contains('numerical'))   return 'numerical';
-  if (cl.contains('match'))       return 'match';
-  if (cl.contains('truefalse'))   return 'truefalse';
+  if (cl.contains('essay')) return 'essay';
+  if (cl.contains('coderunner')) return 'coderunner';
+  if (cl.contains('numerical')) return 'numerical';
+  if (cl.contains('match')) return 'match';
+  if (cl.contains('truefalse')) return 'truefalse';
   // Fallback: cek ada radio → multichoice, ada textarea → essay, ada input text → shortanswer
-  if (queEl.querySelector('input[type="radio"]'))  return 'multichoice';
-  if (queEl.querySelector('.ace_editor'))           return 'coderunner';
-  if (queEl.querySelector('textarea'))             return 'essay';
-  if (queEl.querySelector('input[type="text"]'))   return 'shortanswer';
+  if (queEl.querySelector('input[type="radio"]')) return 'multichoice';
+  if (queEl.querySelector('.ace_editor')) return 'coderunner';
+  if (queEl.querySelector('textarea')) return 'essay';
+  if (queEl.querySelector('input[type="text"]')) return 'shortanswer';
   return 'unknown';
 }
 
@@ -156,7 +156,7 @@ function setAceCode(queEl, code) {
       // Also update hidden textarea for form submission
       syncAceToTextarea(queEl);
       return true;
-    } catch(e) {
+    } catch (e) {
       console.warn('[Prelab] Ace editor API failed:', e);
     }
   }
@@ -165,8 +165,6 @@ function setAceCode(queEl, code) {
   const aceInput = queEl?.querySelector('.ace_text-input');
   if (aceInput) {
     aceInput.focus();
-    // Select all existing content then paste
-    document.execCommand('selectAll', false, null);
     const dt = new DataTransfer();
     dt.setData('text/plain', code);
     aceInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
@@ -202,38 +200,37 @@ function syncAceToTextarea(queEl) {
 
 // ── Router ─────────────────────────────────────────────────────────────────────
 async function handleStart({ ai, mode, prompt }) {
-  if (mode === 'solve')  {
+  if (mode === 'solve') {
     await chrome.storage.local.set({ solveRetryCount: 0 });
     return handleSolve(ai, prompt);
   }
   if (mode === 'select') return startSnipTool(ai, prompt);
-  if (mode === 'text')   return dispatch(ai, { type: 'text', text: extractText(), prompt });
+  if (mode === 'text') return dispatch(ai, { type: 'text', text: extractText(), prompt });
   dispatch(ai, { type: 'image', dataUrl: await captureTab(), prompt });
 }
 
 // ── Retry handler (dipanggil saat Gemini timeout) ──────────────────────────────
 async function retrySolve() {
-  const MAX_RETRY = 3;
   const d = await storageGet(['activeMode', 'ai', 'batchPrompt', 'solveRetryCount', 'isBatching']);
   if (!d.isBatching) return;
 
   const retryCount = Number(d.solveRetryCount ?? 0);
   const ui = document.getElementById('pai-ui');
 
-  if (retryCount >= MAX_RETRY) {
-    setStatus(`Gagal setelah ${MAX_RETRY}x percobaan. Dihentikan.`, ui);
+  if (retryCount >= MAX_SOLVE_RETRIES) {
+    setStatus(`Gagal setelah ${MAX_SOLVE_RETRIES}x percobaan. Dihentikan.`, ui);
     chrome.storage.local.set({ isBatching: false });
-    setTimeout(() => ui?.remove(), 4000);
+    setTimeout(() => ui?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
     return;
   }
 
   const nextCount = retryCount + 1;
   await chrome.storage.local.set({ solveRetryCount: nextCount });
 
-  setStatus(`Mencoba ulang (${nextCount}/${MAX_RETRY})...`, ui);
-  console.log(`[Prelab] Retrying solve attempt ${nextCount}/${MAX_RETRY}`);
+  setStatus(`Mencoba ulang (${nextCount}/${MAX_SOLVE_RETRIES})...`, ui);
+  console.log(`[Prelab] Retrying solve attempt ${nextCount}/${MAX_SOLVE_RETRIES}`);
 
-  await sleep(2000);
+  await sleep(TIMEOUTS.CAPTURE_DELAY);
   if (!(await isStillBatching())) return;
 
   handleSolve(d.ai ?? 'gemini', d.batchPrompt ?? '', true);
@@ -273,7 +270,7 @@ function renderUI(ai, prompt) {
     const stopBtn = document.getElementById('pai-stop');
     stopBtn.addEventListener('mouseover', () => { stopBtn.style.color = '#FF453A'; stopBtn.style.opacity = '1'; stopBtn.style.background = 'rgba(255, 69, 58, 0.1)'; });
     stopBtn.addEventListener('mouseout', () => { stopBtn.style.color = '#EBEBF5'; stopBtn.style.opacity = '0.6'; stopBtn.style.background = 'transparent'; });
-    
+
     stopBtn.addEventListener('click', () => {
       window.__prelabAborted = true; // INSTANT ABORT FLAG
       try {
@@ -301,7 +298,6 @@ async function handleSolve(ai, prompt, isRetry = false) {
   if (!d.isBatching) return;
 
   if (!isRetry) {
-    // Reset abort flag saat memulai solve baru
     window.__prelabAborted = false;
     await chrome.storage.local.set({ solveRetryCount: 0, precheckRetryCount: 0 });
     await chrome.storage.local.remove(['precheckError', 'precheckCode']);
@@ -311,91 +307,127 @@ async function handleSolve(ai, prompt, isRetry = false) {
   const platform = detectPlatform();
 
   if (platform === 'ilab') {
-    // Tunggu minimal ada .que element atau document.readyState complete
     if (document.readyState !== 'complete') {
       await new Promise(res => window.addEventListener('load', res, { once: true }));
     }
-    // Polling singkat untuk soal yang diload via JS/AJAX
     let waitTicks = 0;
-    while (document.querySelectorAll('.que').length === 0 && waitTicks < 10) {
-      await sleep(300);
+    while (document.querySelectorAll('.que').length === 0 && waitTicks < POLL_INTERVALS.QUESTION_LOAD_MAX_TICKS) {
+      await sleep(POLL_INTERVALS.QUESTION_LOAD);
       waitTicks++;
     }
   }
 
-  // Platform-specific quiz validation
   if (platform === 'ilab') {
     const quiz = detectMoodleQuiz();
     if (quiz.isSummaryPage) {
       setStatus('⚠️ Halaman summary — tidak auto-submit.', ui);
       chrome.storage.local.set({ isBatching: false });
-      setTimeout(() => ui?.remove(), 5000);
+      setTimeout(() => ui?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
       return;
     }
     if (quiz.isReviewPage) {
       setStatus('📋 Halaman review — skip.', ui);
       chrome.storage.local.set({ isBatching: false });
-      setTimeout(() => ui?.remove(), 3000);
+      setTimeout(() => ui?.remove(), TIMEOUTS.SUCCESS_UI_REMOVE);
       return;
     }
     if (!quiz.isQuiz) {
       setStatus('⏳ Menunggu halaman quiz...', ui);
-      await sleep(2000);
+      await sleep(TIMEOUTS.CAPTURE_DELAY);
       const quiz2 = detectMoodleQuiz();
       if (!quiz2.isQuiz) {
         setStatus('❌ Bukan halaman quiz iLab.', ui);
         chrome.storage.local.set({ isBatching: false });
-        setTimeout(() => ui?.remove(), 4000);
+        setTimeout(() => ui?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
         return;
       }
     }
-    // CHECK apakah semua soal di halaman ini SUDAH dijawab (feedback visible)
-    // Ini terjadi saat page reload setelah CHECK — jangan re-solve!
     const questions = document.querySelectorAll('.que');
     const allHaveFeedback = questions.length > 0 && [...questions].every(q => {
       const isCorrectLike = q.classList.contains('correct') || q.classList.contains('partiallycorrect') || q.querySelector('.rightanswer');
       if (isCorrectLike) return true;
       if (q.classList.contains('incorrect')) {
         const hasCheckBtn = findButton(q, ['check', 'periksa', 'submit'], ['precheck', 'pre-check']);
-        return !hasCheckBtn; // Jika TIDAK ada tombol Check -> final. Jika ADA -> belum final (boleh retry)
+        return !hasCheckBtn;
       }
-      return false; // Jika belum final, jangan anggap sudah selesai
+      return false;
     });
 
     if (allHaveFeedback) {
       setStatus('📋 Soal sudah dijawab, navigasi ke berikutnya...', ui);
-      await sleep(800);
+      await sleep(TIMEOUTS.NAVIGATE_DELAY);
       navigateNext(s => setStatus(s, ui));
       return;
     }
 
     setStatus(`📝 Terdeteksi ${quiz.questionCount} soal di halaman ini.`, ui);
-    await sleep(500);
+    await sleep(TIMEOUTS.CAPTURE_DELAY);
   }
 
-  setStatus('📸 Menangkap soal...', ui);
-  const dataUrl = await captureTab();
-  if (!dataUrl) { setStatus('Gagal menangkap layar.', ui); return; }
-
-  if (!(await isStillBatching())) return;
-
-  // Tambah context platform ke prompt
+  // Build context dari teks soal
   let enrichedPrompt = prompt || '';
   if (platform === 'ilab') {
     enrichedPrompt = buildIlabContext() + '\n' + enrichedPrompt;
 
-    // Tambah existing code context untuk CodeRunner
     const codeContext = extractCodeRunnerContext();
     if (codeContext) enrichedPrompt = codeContext + '\n' + enrichedPrompt;
 
-    // Tambah error context dari precheck retry
     const errorContext = await getRetryErrorContext();
     if (errorContext) enrichedPrompt = errorContext + '\n' + enrichedPrompt;
   }
 
-  setStatus('🧠 Menganalisis soal...', ui);
-  dispatch(ai, { type: 'solve_image', dataUrl, prompt: enrichedPrompt });
-  setStatus('⏳ Menunggu balasan Gemini...', ui);
+  // Cek apakah ada gambar dalam soal
+  const hasImages = platform === 'ilab' ? detectQuestionImages() : false;
+
+  if (hasImages) {
+    // Ada gambar → ekstrak semua img dari DOM, gabungkan ke 1 canvas composite
+    const imgEls = extractQuestionImages();
+    setStatus(`🖼️ Ditemukan ${imgEls.length} gambar — menggabungkan...`, ui);
+
+    const questionText = extractQuestionsText();
+    const combinedPrompt = questionText
+      ? `[TEKS SOAL UNTUK REFERENSI]\n${questionText}\n\n${enrichedPrompt}`
+      : enrichedPrompt;
+
+    if (!(await isStillBatching())) return;
+
+    // Coba stitch canvas (tidak butuh scroll, tidak lambat seperti screenshot)
+    const stitched = await stitchImages(imgEls);
+
+    if (stitched) {
+      setStatus('🧠 Menganalisis soal (composite gambar + teks)...', ui);
+      // Gunakan 'solve_image' agar gemini.js otomatis tambahkan aturan JSON
+      dispatch(ai, { type: 'solve_image', dataUrl: stitched, prompt: combinedPrompt });
+    } else {
+      // Fallback: screenshot tab biasa (jika canvas CORS blocked)
+      console.warn('[Prelab] Canvas stitch gagal, fallback ke screenshot tab.');
+      setStatus('📸 Mengambil screenshot sebagai fallback...', ui);
+      await sleep(TIMEOUTS.CAPTURE_DELAY);
+      if (!(await isStillBatching())) return;
+      const dataUrl = await captureTab();
+      if (dataUrl) {
+        dispatch(ai, { type: 'image', dataUrl, prompt: combinedPrompt });
+      } else {
+        // Final fallback: teks saja
+        if (!questionText) { setStatus('❌ Gagal mengekstrak soal.', ui); return; }
+        setStatus('🧠 Menganalisis soal (teks saja)...', ui);
+        dispatch(ai, { type: 'solve_text', text: questionText, prompt: enrichedPrompt });
+      }
+    }
+  } else {
+    // Default: teks saja — lebih cepat & stabil (tidak ada pemrosesan gambar)
+    setStatus('📝 Mengirim teks soal...', ui);
+    const questionText = extractQuestionsText();
+    if (!questionText) {
+      setStatus('❌ Gagal mengekstrak teks soal.', ui);
+      return;
+    }
+    if (!(await isStillBatching())) return;
+    setStatus('🧠 Menganalisis soal...', ui);
+    dispatch(ai, { type: 'solve_text', text: questionText, prompt: enrichedPrompt });
+  }
+
+  setStatus('⏳ Menunggu balasan AI...', ui);
 }
 
 // ── iLab context builder ───────────────────────────────────────────────────────
@@ -425,10 +457,191 @@ function buildIlabContext() {
   return `[CONTEXT: Platform iLab Gunadarma (Moodle). ${parts.join(' || ')}]`;
 }
 
+// ── Detect images in questions ─────────────────────────────────────────────────
+// Cek teks soal (.qtext) DAN pilihan jawaban (.answer) karena gambar bisa ada di opsi
+function detectQuestionImages() {
+  const questions = document.querySelectorAll('.que');
+  for (const q of questions) {
+    // Area yang dicek: teks soal + pilihan jawaban
+    const searchAreas = [
+      q.querySelector('.qtext'),
+      q.querySelector('.answer'),
+      q.querySelector('.formulation'),
+    ].filter(Boolean);
+
+    for (const area of searchAreas) {
+      const images = area.querySelectorAll('img[src]');
+      for (const img of images) {
+        const src = (img.src || '').toLowerCase();
+        const naturalW = img.naturalWidth || img.width || 0;
+        const naturalH = img.naturalHeight || img.height || 0;
+        const isIcon = src.includes('icon') || src.includes('sprite') ||
+                       src.includes('data:image/svg') || src.includes('1x1') ||
+                       src.includes('pixel') || src.includes('blank') ||
+                       src.includes('spacer') || src.includes('bullet');
+        // Gambar bermakna: minimal 50x50 dan bukan icon/sprite
+        if (!isIcon && naturalW > 50 && naturalH > 50) return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ── Extract all meaningful img elements from questions (untuk composite canvas) ──
+// Dedup by src agar gambar yang sama hanya muncul sekali
+function extractQuestionImages() {
+  const questions = document.querySelectorAll('.que');
+  const found = [];
+  const seenSrcs = new Set();
+
+  for (const q of questions) {
+    // Hanya cek .qtext dan .answer — jangan .formulation karena itu parent dari keduanya
+    // (akan menyebabkan gambar terhitung 2x jika .formulation ikut discan)
+    const areas = [
+      q.querySelector('.qtext'),
+      q.querySelector('.answer'),
+    ].filter(Boolean);
+
+    for (const area of areas) {
+      const imgs = area.querySelectorAll('img[src]');
+      for (const img of imgs) {
+        const src = img.src || '';
+        const srcLow = src.toLowerCase();
+        const naturalW = img.naturalWidth || img.width || 0;
+        const naturalH = img.naturalHeight || img.height || 0;
+        const isIcon = srcLow.includes('icon') || srcLow.includes('sprite') ||
+                       srcLow.includes('data:image/svg') || srcLow.includes('1x1') ||
+                       srcLow.includes('pixel') || srcLow.includes('blank') ||
+                       srcLow.includes('spacer') || srcLow.includes('bullet');
+        // Gambar bermakna, belum pernah ditemui
+        if (!isIcon && naturalW > 50 && naturalH > 50 && !seenSrcs.has(src)) {
+          seenSrcs.add(src);
+          found.push(img);
+        }
+      }
+    }
+  }
+
+  return found;
+}
+
+// ── Stitch multiple img elements into 1 composite canvas image ──────────────────
+// Layout: single column jika <= 2 gambar, 2-column grid jika lebih
+// Setiap gambar diberi label A / B / C / D
+async function stitchImages(imgElements) {
+  const LABEL_OPTS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+  const COLS = imgElements.length <= 2 ? 1 : 2;
+  const COL_W = 440;          // lebar per kolom (px)
+  const PAD = 12;              // padding antar gambar
+  const LABEL_H = 30;         // tinggi area label di atas gambar
+  const BG = '#f4f4f4';
+  const ACCENT = '#2563eb';   // warna label badge
+
+  // Kumpulkan dimensi tiap gambar
+  const items = imgElements.map((imgEl, i) => {
+    const w = imgEl.naturalWidth || imgEl.width || COL_W;
+    const h = imgEl.naturalHeight || imgEl.height || 200;
+    const scale = Math.min(1, COL_W / w);
+    return { imgEl, sw: Math.round(w * scale), sh: Math.round(h * scale), label: LABEL_OPTS[i] || String(i + 1) };
+  }).filter(it => it.sw > 0 && it.sh > 0);
+
+  if (items.length === 0) return null;
+
+  const rows = Math.ceil(items.length / COLS);
+
+  // Hitung tinggi tiap baris (ambil gambar tertinggi di baris itu)
+  const rowHeights = [];
+  for (let r = 0; r < rows; r++) {
+    let maxH = 0;
+    for (let c = 0; c < COLS; c++) {
+      const idx = r * COLS + c;
+      if (idx < items.length) maxH = Math.max(maxH, items[idx].sh + LABEL_H);
+    }
+    rowHeights.push(maxH);
+  }
+
+  const totalW = COLS * COL_W + (COLS - 1) * PAD;
+  const totalH = rowHeights.reduce((a, b) => a + b, 0) + (rows - 1) * PAD;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = totalW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, totalW, totalH);
+
+  try {
+    let y = 0;
+    for (let r = 0; r < rows; r++) {
+      let x = 0;
+      for (let c = 0; c < COLS; c++) {
+        const idx = r * COLS + c;
+        if (idx >= items.length) break;
+        const { imgEl, sw, sh, label } = items[idx];
+
+        // Label badge
+        ctx.fillStyle = ACCENT;
+        ctx.fillRect(x, y, COL_W, LABEL_H);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 15px Arial, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`Pilihan ${label}`, x + 10, y + 20);
+
+        // Gambar
+        ctx.drawImage(imgEl, x, y + LABEL_H, sw, sh);
+
+        // Border tipis
+        ctx.strokeStyle = '#d1d5db';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x, y, COL_W, sh + LABEL_H);
+
+        x += COL_W + PAD;
+      }
+      y += rowHeights[r] + PAD;
+    }
+
+    return canvas.toDataURL('image/png');
+  } catch (e) {
+    // CORS error saat drawImage — canvas tainted
+    console.warn('[Prelab] stitchImages: canvas tainted (CORS), will fallback.', e);
+    return null;
+  }
+}
+
+// ── Extract text from questions ────────────────────────────────────────────────
+function extractQuestionsText() {
+  const questions = document.querySelectorAll('.que');
+  if (questions.length === 0) return '';
+
+  const parts = [];
+  questions.forEach((q, i) => {
+    const type = detectQuestionType(q);
+    const qText = q.querySelector('.qtext')?.innerText?.trim() || '';
+    const options = [];
+
+    if (type === 'multichoice' || type === 'truefalse') {
+      q.querySelectorAll('.answer label, .answer .d-flex, .answer div[data-region]').forEach(label => {
+        const txt = label.innerText?.trim();
+        if (txt) options.push(txt);
+      });
+    }
+
+    let part = `SOAL ${i + 1} (${type}):\n${qText}`;
+    if (options.length > 0) {
+      part += '\nOpsi:\n' + options.map((o, j) => `  ${j + 1}. ${o}`).join('\n');
+    }
+    parts.push(part);
+  });
+
+  return parts.join('\n\n');
+}
+
 // ── CodeRunner context: extract existing template code ─────────────────────────
 function extractCodeRunnerContext() {
-  const queEl = document.querySelector('.que.coderunner') || 
-                document.querySelector('.que');
+  const queEl = document.querySelector('.que.coderunner') ||
+    document.querySelector('.que');
   if (!queEl) return '';
 
   const type = detectQuestionType(queEl);
@@ -477,8 +690,8 @@ async function executeFillAnswer(json) {
   const platform = detectPlatform();
   console.log(`[Prelab] Fill answer on platform: ${platform}`, json);
 
-  if (platform === 'ilab')    return ilabFillAnswer(json);
-  if (platform === 'vclass')  return vclassFillAnswer(json);
+  if (platform === 'ilab') return ilabFillAnswer(json);
+  if (platform === 'vclass') return vclassFillAnswer(json);
   return genericFillAnswer(json);
 }
 
@@ -486,17 +699,17 @@ async function executeFillAnswer(json) {
 // iLab (Moodle) — Fill Answer
 // ══════════════════════════════════════════════════════════════════════════════
 async function ilabFillAnswer(json) {
-  const ui          = document.getElementById('pai-ui');
-  const status      = msg => setStatus(msg, ui);
-  
+  const ui = document.getElementById('pai-ui');
+  const status = msg => setStatus(msg, ui);
+
   // originalJaw bisa jadi array (untuk multi-select checkbox) atau string
-  const isArray     = Array.isArray(json.jawaban);
+  const isArray = Array.isArray(json.jawaban);
   const originalJaw = isArray ? json.jawaban : String(json.jawaban ?? '').trim();
-  const jaw         = isArray ? originalJaw.map(s => String(s).toUpperCase()) : String(originalJaw).toUpperCase();
-  const idxHint     = Number(json.index_pilihan ?? 0);
+  const jaw = isArray ? originalJaw.map(s => String(s).toUpperCase()) : String(originalJaw).toUpperCase();
+  const idxHint = Number(json.index_pilihan ?? 0);
 
   if (!originalJaw || (isArray && originalJaw.length === 0)) { status('❌ Tidak ada jawaban diterima.'); return; }
-  
+
   const displayJaw = isArray ? originalJaw.join(', ') : originalJaw;
   status(`✍️ Menerapkan: <span style="opacity:0.8">${displayJaw.length > 30 ? '(multiselect/teks panjang)' : displayJaw}</span>`);
 
@@ -531,9 +744,8 @@ async function ilabFillAnswer(json) {
   if (type === 'coderunner') {
     filled = await ilabFillCodeRunner(queEl, originalJaw, status);
     if (filled) {
-      // CodeRunner: lakukan PRECHECK dulu, jangan langsung navigate
-      setTimeout(() => ilabPrecheckFlow(queEl, status), 1500);
-      return; // <-- Jangan navigate next dulu!
+      setTimeout(() => ilabPrecheckFlow(queEl, status), PRECHECK_FLOW_DELAY_MS);
+      return;
     }
   }
 
@@ -545,12 +757,12 @@ async function ilabFillAnswer(json) {
   if (!filled) {
     status('❌ Gagal mengisi jawaban. Tipe soal: ' + (type || 'unknown'));
     chrome.storage.local.set({ isBatching: false });
-    setTimeout(() => document.getElementById('pai-ui')?.remove(), 4000);
+    setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
     return;
   }
 
   // ── Non-CodeRunner: langsung navigate (atau CHECK dulu kalau ada) ─────────
-  setTimeout(() => ilabCheckAndNavigate(queEl, status), 1200);
+  setTimeout(() => ilabCheckAndNavigate(queEl, status), CHECK_NAVIGATE_DELAY_MS);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -564,7 +776,7 @@ async function ilabPrecheckFlow(queEl, status) {
 
   // Cari tombol PRECHECK
   const precheckBtn = findButton(queEl, ['precheck']);
-  
+
   if (!precheckBtn) {
     status('⚠️ Tombol PRECHECK tidak ditemukan. Langsung CHECK...');
     await sleep(500);
@@ -573,46 +785,40 @@ async function ilabPrecheckFlow(queEl, status) {
 
   // Sync Ace editor ke textarea sebelum precheck
   syncAceToTextarea(queEl);
-  await sleep(300);
+  await sleep(TIMEOUTS.CAPTURE_DELAY);
 
-  // Bersihkan result precheck lama (jika ada) BElUM kita klik
   clearPrecheckResult(queEl);
 
   status('🔍 Menjalankan PRECHECK...');
   fireClick(precheckBtn);
 
-  // Tunggu hasil PRECHECK muncul (polling DOM)
-  const resultEl = await waitForPrecheckResult(queEl, 25000);
+  const resultEl = await waitForPrecheckResult(queEl);
 
   if (!resultEl) {
     status('⚠️ Hasil PRECHECK tidak muncul. Langsung CHECK...');
     return ilabCheckAndNavigate(queEl, status);
   }
 
-  // Tunda lebih lama agar efek 'refresh' AJAX Moodle & DOM redraw selesai
   status('⏳ Sinkronisasi layout Moodle (10 detik)...');
-  await sleep(10000);
-  
+  await sleep(MOODLE_RENDER_DELAY_MS);
+
   // Re-query resultEl jaga-jaga kalau dom Moodle me-replace elementnya (stale DOM)
   const freshResultEl = queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || resultEl;
 
-  // Scroll menggunakan teknik agresif untuk scrollable containers di Moodle
   try {
-    // 1st attempt: Native scrollIntoView ke posisi tengah agar kode (atas) & hasil (bawah) terlihat
     freshResultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    
-    // 2nd fallback: Moodle sering punya overflow di tag tertentu (#page, #region-main, dll)
+
     const container = freshResultEl.closest('.que, #region-main, #page, .scrollable, [style*="overflow"]');
     if (container) {
-      container.scrollTop = container.scrollHeight; // paksa scroll container
+      container.scrollTop = container.scrollHeight;
     }
-  } catch(e) {
+  } catch (e) {
     try {
       const fallback = queEl.querySelector('.answer, .formulation') || queEl;
       fallback.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } catch(_){}
+    } catch (_) { }
   }
-  await sleep(1000);
+  await sleep(ERROR_SCREENSHOT_DELAY_MS);
 
   // Parse hasil PRECHECK
   const resultText = (resultEl.innerText || resultEl.textContent || '').trim();
@@ -636,19 +842,19 @@ async function ilabPrecheckFlow(queEl, status) {
       freshResultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       const container = freshResultEl.closest('.que, #region-main, #page');
       if (container) container.scrollTop = container.scrollHeight;
-    } catch(e){}
+    } catch (e) { }
     await sleep(1000); // tunggu scroll selesai sebelum screenshot
     await saveErrorScreenshot(queEl, resultText);
     chrome.storage.local.set({ isBatching: false });
     window.__prelabAborted = true;
-    setTimeout(() => document.getElementById('pai-ui')?.remove(), 7000);
-    return; // STOP! Jangan cek atau navigate.
+    setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_LOG_REMOVE);
+    return;
   }
 
   // Retry: simpan error context & kirim ulang ke Gemini
   const nextRetry = retryCount + 1;
   const existingCode = getExistingCode(queEl);
-  
+
   status(`🔄 PRECHECK gagal. Retry ${nextRetry}/${MAX_PRECHECK_RETRIES}...`);
 
   await chrome.storage.local.set({
@@ -660,7 +866,7 @@ async function ilabPrecheckFlow(queEl, status) {
   // Clear precheck result before retrying (agar tidak dibaca ulang)
   clearPrecheckResult(queEl);
 
-  await sleep(1500);
+  await sleep(PRECHECK_CLEAR_DELAY_MS);
   if (!(await isStillBatching())) return;
 
   // Re-trigger solve flow — Gemini akan lihat screenshot + error context
@@ -669,12 +875,11 @@ async function ilabPrecheckFlow(queEl, status) {
 }
 
 // Tunggu precheck result muncul di DOM
-async function waitForPrecheckResult(queEl, timeout = 25000) {
+async function waitForPrecheckResult(queEl, timeout = TIMEOUTS.PRECHECK_RESULT) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (window.__prelabAborted) return null; // Instant abort check
-    // Cari elemen hasil precheck
-    const result = 
+    if (window.__prelabAborted) return null;
+    const result =
       queEl.querySelector('.coderunner-test-results') ||
       queEl.querySelector('.CodeRunner-test-results') ||
       queEl.querySelector('.que-coderunner-result') ||
@@ -684,11 +889,11 @@ async function waitForPrecheckResult(queEl, timeout = 25000) {
       queEl.querySelector('table.coderunner_test_results') ||
       queEl.querySelector('.precheck-results') ||
       queEl.querySelector('[id*="feedback"]');
-    
+
     if (result && result.innerText?.trim().length > 5) {
       return result;
     }
-    await sleep(500);
+    await sleep(POLL_INTERVALS.QUESTION_LOAD);
   }
   return null;
 }
@@ -696,17 +901,17 @@ async function waitForPrecheckResult(queEl, timeout = 25000) {
 // Parse PRECHECK result — return true if all tests passed
 function parsePrecheckResult(text, el) {
   const lower = text.toLowerCase();
-  
+
   // Explicit pass indicators
-  if (lower.includes('passed all') || lower.includes('all correct') || 
-      lower.includes('semua benar') || lower.includes('mark: 1') ||
-      lower.includes('passed')) {
+  if (lower.includes('passed all') || lower.includes('all correct') ||
+    lower.includes('semua benar') || lower.includes('mark: 1') ||
+    lower.includes('passed')) {
     // Double check: pastikan tidak ada "failed" juga
     if (!lower.includes('fail') && !lower.includes('error') && !lower.includes('wrong')) {
       return true;
     }
   }
-  
+
   // Cek tabel Coderunner: prioritaskan centang hijau (Pass/✓/.correct) terlebih dahulu
   const rows = el.querySelectorAll('tr');
   if (rows.length > 1) {
@@ -716,10 +921,10 @@ function parsePrecheckResult(text, el) {
       if (row.classList.contains('correct') || row.classList.contains('pass')) return true;
       const cells = row.querySelectorAll('td');
       // Cari apakah ada cell yang memiliki centang hijau atau class correct
-      return [...cells].some(c => 
-        c.classList.contains('correct') || 
+      return [...cells].some(c =>
+        c.classList.contains('correct') ||
         c.classList.contains('pass') ||
-        c.innerText?.includes('✓') || 
+        c.innerText?.includes('✓') ||
         c.innerText?.includes('Pass')
       );
     });
@@ -729,7 +934,7 @@ function parsePrecheckResult(text, el) {
     // Strategy 2: Samakan string Expected dan Got (Lebih mentolerir spasi)
     let expectedIdx = -1;
     let gotIdx = -1;
-    
+
     // Cari index kolom
     const headers = rows[0].querySelectorAll('th');
     headers.forEach((th, i) => {
@@ -745,7 +950,7 @@ function parsePrecheckResult(text, el) {
         if (!cells[expectedIdx] || !cells[gotIdx]) return true; // abaikan jika baris tidak lengkap
         const expected = (cells[expectedIdx].innerText || cells[expectedIdx].textContent || '').trim().replace(/\s+/g, ' ');
         const got = (cells[gotIdx].innerText || cells[gotIdx].textContent || '').trim().replace(/\s+/g, ' ');
-        return expected !== '' && expected === got; 
+        return expected !== '' && expected === got;
       });
       if (allMatched) return true;
       // Jika hijau gagal, dan text match gagal, maka ini pasti salah.
@@ -755,7 +960,7 @@ function parsePrecheckResult(text, el) {
 
   // Explicit fail indicators
   if (lower.includes('fail') || lower.includes('error') || lower.includes('wrong') ||
-      lower.includes('salah') || lower.includes('expected') || lower.includes('got')) {
+    lower.includes('salah') || lower.includes('expected') || lower.includes('got')) {
     return false;
   }
 
@@ -769,7 +974,7 @@ function clearPrecheckResult(queEl) {
   const results = queEl.querySelectorAll(
     '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results'
   );
-  results.forEach(el => { try { el.innerHTML = ''; } catch {/***/} });
+  results.forEach(el => { try { el.innerHTML = ''; } catch {/***/ } });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -779,41 +984,36 @@ function clearPrecheckResult(queEl) {
 async function ilabCheckAndNavigate(queEl, status) {
   if (!(await isStillBatching())) return;
 
-  // Sync Ace to textarea sebelum submit (untuk CodeRunner)
   syncAceToTextarea(queEl);
-  await sleep(300);
+  await sleep(TIMEOUTS.CAPTURE_DELAY);
 
-  // Reset precheck retry count untuk soal ini
   await chrome.storage.local.remove(['precheckError', 'precheckCode', 'precheckRetryCount']);
 
-  // Cari tombol CHECK / Submit (JANGAN sampai kepencet Precheck lagi!)
   const checkBtn = findButton(queEl, ['check', 'periksa', 'submit'], ['precheck', 'pre-check']);
-  
+
   if (checkBtn) {
     status('📝 Menjalankan CHECK...');
 
-    // Flag to detect if form submission causes page reload
     let isUnloading = false;
     const unloadListener = () => { isUnloading = true; };
     window.addEventListener('beforeunload', unloadListener);
     window.addEventListener('unload', unloadListener);
 
     fireClick(checkBtn);
-    
-    // Polling page update setelah CHECK (AJAX atau Reload)
+
     let ajaxDone = false;
     let ticks = 0;
-    while(ticks < 30) { // maks 15 detik
-      await sleep(500);
+    while (ticks < MAX_CHECK_POLL_TICKS) {
+      await sleep(CHECK_POLL_INTERVAL_MS);
       if (isUnloading || window.__prelabAborted) {
-         status('⏳ Halaman sedang dimuat ulang...');
-         window.removeEventListener('beforeunload', unloadListener);
-         window.removeEventListener('unload', unloadListener);
-         return; // JANGAN panggil navigateNext, karena reload sedang berjalan (menghindari dibatalkannya post check)
+        status('⏳ Halaman sedang dimuat ulang...');
+        window.removeEventListener('beforeunload', unloadListener);
+        window.removeEventListener('unload', unloadListener);
+        return;
       }
       if (queEl.classList.contains('correct') || queEl.classList.contains('incorrect') || queEl.querySelector('.outcome') || queEl.classList.contains('complete')) {
-         ajaxDone = true;
-         break;
+        ajaxDone = true;
+        break;
       }
       ticks++;
     }
@@ -824,15 +1024,14 @@ async function ilabCheckAndNavigate(queEl, status) {
     if (!ajaxDone) {
       status('⚠️ CHECK selesai, tidak ada respons AJAX yang terdeteksi.');
     } else {
-      // Tunda ekstra karena feedback sesudah CHECK butuh waktu untuk render di Moodle
-      await sleep(2500);
-      try { 
+      await sleep(CHECK_FEEDBACK_DELAY_MS);
+      try {
         const feedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results, .precheck-results') || queEl.querySelector('.answer, .formulation') || queEl;
-        feedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); 
+        feedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         const container = feedbackEl.closest('.que, #region-main, #page, .scrollable, [style*="overflow"]');
         if (container) container.scrollTop = container.scrollHeight;
-      } catch(e) {}
-      await sleep(1000);
+      } catch (e) { }
+      await sleep(ERROR_SCREENSHOT_DELAY_MS);
 
       // Cek hasil CHECK
       const isCorrect = checkIfCorrect(queEl);
@@ -841,66 +1040,64 @@ async function ilabCheckAndNavigate(queEl, status) {
       } else if (isCorrect === false) {
         const d = await storageGet(['precheckRetryCount']);
         const retryCount = Number(d.precheckRetryCount ?? 0);
-        
+
         if (retryCount >= MAX_PRECHECK_RETRIES) {
           status(`❌ CHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot.`);
           const questionText = queEl.querySelector('.qtext')?.innerText?.trim() || '';
-          
-          // Pastikan scroll berada di feedback table sebelum screenshot
+
           try {
-             const freshFeedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || queEl;
-             freshFeedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-             const container = freshFeedbackEl.closest('.que, #region-main, #page, .scrollable');
-             if (container) container.scrollTop = container.scrollHeight;
-          } catch(e) {}
-          await sleep(1000);
+            const freshFeedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || queEl;
+            freshFeedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const container = freshFeedbackEl.closest('.que, #region-main, #page, .scrollable');
+            if (container) container.scrollTop = container.scrollHeight;
+          } catch (e) { }
+          await sleep(ERROR_SCREENSHOT_DELAY_MS);
 
           await saveErrorScreenshot(queEl, `CHECK failed: ${questionText.slice(0, 100)}`);
           chrome.storage.local.set({ isBatching: false });
           window.__prelabAborted = true;
-          setTimeout(() => document.getElementById('pai-ui')?.remove(), 7000);
-          return; // STOP!
+          setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_LOG_REMOVE);
+          return;
         }
-        
+
         const nextRetry = retryCount + 1;
         status(`🔄 CHECK gagal. Retry ${nextRetry}/${MAX_PRECHECK_RETRIES}...`);
-        
+
         const feedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || queEl;
         const errText = feedbackEl.innerText || '';
         const existingCode = getExistingCode(queEl) || '';
-        
+
         await chrome.storage.local.set({
           precheckError: errText.slice(0, 2500),
           precheckCode: existingCode,
           precheckRetryCount: nextRetry
         });
-        
+
         clearPrecheckResult(queEl);
-        
-        await sleep(1500);
+
+        await sleep(TIMEOUTS.CHECK_DELAY);
         if (!(await isStillBatching())) return;
-        
+
         const sd = await storageGet(['ai', 'batchPrompt']);
-        return handleSolve(sd.ai || 'gemini', sd.batchPrompt || '', true); // Retry!
+        return handleSolve(sd.ai || 'gemini', sd.batchPrompt || '', true);
       } else {
         status('📋 CHECK selesai.');
       }
-      await sleep(1500);
+      await sleep(TIMEOUTS.CHECK_DELAY);
     }
   }
 
-  // Navigate to next question jika tidak terjadi page reload
   navigateNext(status);
 }
 
 // Check if answer is correct after CHECK (look at Moodle feedback)
 function checkIfCorrect(queEl) {
   if (!queEl) return null;
-  
+
   const cl = queEl.classList;
-  if (cl.contains('correct'))           return true;
-  if (cl.contains('incorrect'))         return false;
-  if (cl.contains('partiallycorrect'))  return false;
+  if (cl.contains('correct')) return true;
+  if (cl.contains('incorrect')) return false;
+  if (cl.contains('partiallycorrect')) return false;
 
   // Check feedback elements
   const feedback = queEl.querySelector('.outcome, .feedback, .state');
@@ -942,11 +1139,11 @@ async function saveErrorScreenshot(queEl, errorText) {
     });
 
     // Keep only last 30 entries
-    if (logs.length > 30) logs.splice(0, logs.length - 30);
+    if (logs.length > MAX_ERROR_LOGS) logs.splice(0, logs.length - MAX_ERROR_LOGS);
 
     await chrome.storage.local.set({ errorLogs: logs });
     console.log(`[Prelab] Error screenshot saved. Total logs: ${logs.length}`);
-  } catch(e) {
+  } catch (e) {
     console.warn('[Prelab] Failed to save error screenshot:', e);
   }
 }
@@ -990,11 +1187,11 @@ function ilabFillMultichoice(queEl, originalJaw, jaw, idxHint, status) {
     for (const opt of options) {
       if (opt.radio.checked) continue;
 
-      const raw   = opt.text.toUpperCase().trim();
+      const raw = opt.text.toUpperCase().trim();
       const clean = raw.replace(/^[A-Ea-e][.)\s]+/i, '').trim();
       const rNorm = norm(opt.text);
       const cNorm = norm(clean);
-      const val   = (opt.radio.value || '').toUpperCase().trim();
+      const val = (opt.radio.value || '').toUpperCase().trim();
 
       if (raw === currentJaw || clean === currentJaw || rNorm === currentJawNorm || cNorm === currentJawNorm || val === currentJaw) {
         moodleClickRadio(opt.radio);
@@ -1044,7 +1241,7 @@ function ilabFillMultichoice(queEl, originalJaw, jaw, idxHint, status) {
     if (!matched) {
       for (const opt of options) {
         if (opt.radio.checked) continue;
-        const raw   = opt.text.toUpperCase().trim();
+        const raw = opt.text.toUpperCase().trim();
         const clean = raw.replace(/^[A-E][.)\s]+/i, '').trim();
         const rNorm = norm(opt.text);
         const cNorm = norm(clean);
@@ -1107,7 +1304,7 @@ function getRadioLabelText(radio, queEl) {
 // ── iLab: Short Answer filler ───────────────────────────────────────────────
 function ilabFillShortAnswer(queEl, jawaban, status) {
   const inputs = [...queEl.querySelectorAll('.answer input[type="text"], .formulation input[type="text"], input[type="text"][name*="answer"]')];
-  
+
   if (inputs.length === 0) return false;
 
   const jawArr = Array.isArray(jawaban) ? jawaban : [jawaban];
@@ -1161,7 +1358,7 @@ async function ilabFillCodeRunner(queEl, jawaban, status) {
   const inlineInputs = [...queEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])')].filter(el => {
     return el.offsetParent !== null && !el.classList.contains('ace_text-input');
   });
-  
+
   if (inlineInputs.length > 0) {
     const jawArr = Array.isArray(jawaban) ? jawaban : [jawaban];
     let filledCount = 0;
@@ -1194,7 +1391,7 @@ async function ilabFillCodeRunner(queEl, jawaban, status) {
       highlightElement(queEl.querySelector('.ace_editor'));
       status('✅ Kode diisi (Ace Editor API).');
       return true;
-    } catch(e) {
+    } catch (e) {
       // Jika setValue error karena ada region read-only (CodeRunner GapFill versi Editor), 
       // kita gunakan selectAll + insert yang secara otomatis mematuhi batas read-only!
       try {
@@ -1212,15 +1409,9 @@ async function ilabFillCodeRunner(queEl, jawaban, status) {
   }
 
   // Method 2: Ace text-input paste (select all → paste full code)
-  // FIXED: Gunakan native Ctrl+A & Backspace agar kode lama terhapus tuntas
   const aceInput = queEl.querySelector('.ace_text-input');
   if (aceInput) {
     aceInput.focus();
-    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
-    aceInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', keyCode: 65, ctrlKey: !isMac, metaKey: isMac, bubbles: true }));
-    await sleep(100);
-    aceInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, bubbles: true }));
-    await sleep(150);
     const dt = new DataTransfer();
     dt.setData('text/plain', jText);
     aceInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
@@ -1303,7 +1494,6 @@ function ilabNavigateNext(status) {
     'button[type="submit"]:not([name="previous"])',
   ];
 
-  // DANGER CHECK: jangan klik "Submit all and finish"
   const dangerSelectors = [
     'input[name="finishattempt"]',
     'input[value*="Submit all"]',
@@ -1317,7 +1507,7 @@ function ilabNavigateNext(status) {
     if (dangerBtn) {
       status('🏁 Soal terakhir! Tidak auto-submit. Review dulu.');
       chrome.storage.local.set({ isBatching: false });
-      setTimeout(() => document.getElementById('pai-ui')?.remove(), 6000);
+      setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
       return;
     }
   }
@@ -1332,8 +1522,8 @@ function ilabNavigateNext(status) {
   }
 
   const navButtons = document.querySelectorAll('.qn_buttons a, .quiz-nav-buttons a');
-  const notYetAnswered = [...navButtons].find(a => 
-    a.classList.contains('notyetanswered') || 
+  const notYetAnswered = [...navButtons].find(a =>
+    a.classList.contains('notyetanswered') ||
     a.getAttribute('title')?.toLowerCase().includes('not yet answered') ||
     a.getAttribute('title')?.toLowerCase().includes('belum dijawab')
   );
@@ -1346,7 +1536,7 @@ function ilabNavigateNext(status) {
 
   status('🏁 Semua soal selesai! Review jawabanmu.');
   chrome.storage.local.set({ isBatching: false });
-  setTimeout(() => document.getElementById('pai-ui')?.remove(), 5000);
+  setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
 }
 
 function genericNavigateNext(status) {
@@ -1359,11 +1549,11 @@ function genericNavigateNext(status) {
       if (d.isBatching && d.activeMode === 'solve') {
         handleStart({ ai: d.ai ?? 'gemini', mode: 'solve', prompt: d.batchPrompt ?? '' });
       }
-    }, 3200);
+    }, TIMEOUTS.GENERIC_RETRY_DELAY);
   } else {
     status('🏁 Selesai. Tidak ada tombol lanjut.');
     chrome.storage.local.set({ isBatching: false });
-    setTimeout(() => document.getElementById('pai-ui')?.remove(), 4000);
+    setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
   }
 }
 
@@ -1379,11 +1569,11 @@ function vclassFillAnswer(json) {
 // Generic Fill Answer (legacy fallback)
 // ══════════════════════════════════════════════════════════════════════════════
 function genericFillAnswer(json) {
-  const ui          = document.getElementById('pai-ui');
-  const status      = msg => setStatus(msg, ui);
+  const ui = document.getElementById('pai-ui');
+  const status = msg => setStatus(msg, ui);
   const originalJaw = String(json.jawaban ?? '').trim();
-  const jaw         = originalJaw.toUpperCase();
-  const idxHint     = Number(json.index_pilihan ?? 0);
+  const jaw = originalJaw.toUpperCase();
+  const idxHint = Number(json.index_pilihan ?? 0);
 
   if (!originalJaw) { status('Tidak ada jawaban diterima.'); return; }
   status(`Menerapkan: <span style="opacity:0.8">${originalJaw.length > 30 ? '(teks panjang)' : originalJaw}</span>`);
@@ -1401,7 +1591,7 @@ function genericFillAnswer(json) {
     });
 
     if (editors.length > 0) {
-      const el    = editors.find(e => e.classList.contains('ace_text-input')) ?? editors[editors.length - 1];
+      const el = editors.find(e => e.classList.contains('ace_text-input')) ?? editors[editors.length - 1];
       const jText = originalJaw.replace(/\\n/g, '\n');
       try {
         setNativeValue(el, jText, el.tagName === 'TEXTAREA');
@@ -1411,7 +1601,7 @@ function genericFillAnswer(json) {
         highlightElement(el.closest('.ace_editor, .CodeMirror, .answer, form') ?? el);
         clicked = true;
         status('Masukan berhasil diisikan.');
-      } catch(err) {
+      } catch (err) {
         console.warn('[Prelab] Essay inject error:', err);
       }
     }
@@ -1441,9 +1631,9 @@ function genericFillAnswer(json) {
 
 function findUnansweredQuestion(questions) {
   for (const q of questions) {
-    if (q.classList.contains('notyetanswered') || 
-        q.classList.contains('invalidanswer') ||
-        !q.classList.contains('complete')) {
+    if (q.classList.contains('notyetanswered') ||
+      q.classList.contains('invalidanswer') ||
+      !q.classList.contains('complete')) {
       return q;
     }
     const radios = q.querySelectorAll('input[type="radio"]');
@@ -1476,12 +1666,12 @@ function findButton(queEl, keywords, excludeKeywords = []) {
     const txt = (btn.innerText || btn.value || btn.name || '').toLowerCase();
     const matchesKeyword = keywords.some(k => txt.includes(k));
     const excluded = excludeKeywords.some(ex => txt.includes(ex));
-    
+
     // Khusus untuk Check vs Precheck: jika mencari 'check' tapi ini 'precheck', harus di-skip.
     if (matchesKeyword && !excluded && btn.offsetParent !== null) {
       // Pastikan kalau cuma nyari 'check', nggak salah klik 'precheck'
       if (keywords.includes('check') && !keywords.includes('precheck') && txt.includes('precheck')) {
-         continue;
+        continue;
       }
       return btn;
     }
@@ -1493,10 +1683,10 @@ function findButton(queEl, keywords, excludeKeywords = []) {
     const txt = (btn.innerText || btn.value || btn.name || '').toLowerCase();
     const matchesKeyword = keywords.some(k => txt.includes(k));
     const excluded = excludeKeywords.some(ex => txt.includes(ex));
-    
+
     if (matchesKeyword && !excluded) {
       if (keywords.includes('check') && !keywords.includes('precheck') && txt.includes('precheck')) {
-         continue;
+        continue;
       }
       return btn;
     }
@@ -1507,14 +1697,14 @@ function findButton(queEl, keywords, excludeKeywords = []) {
 
 function moodleClickRadio(el) {
   if (!el) return;
-  
+
   // Jika checkbox/radio sudah tercentang, biarkan saja
   if (el.type === 'checkbox' && el.checked) return;
   if (el.type === 'radio' && el.checked) return;
 
   // Gunakan klik native browser agar state toggle pada checkbox sinkron sempurna
   el.click();
-  
+
   // Fallback trigger event manual kalau Moodle gak nangkep (tapi biasanya click() udah cukup)
   el.dispatchEvent(new Event('change', { bubbles: true }));
   el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1567,7 +1757,7 @@ function findNextButton() {
 }
 
 function extractText() {
-  const skip = new Set(['script','style','noscript','nav','header','footer']);
+  const skip = new Set(['script', 'style', 'noscript', 'nav', 'header', 'footer']);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode(n) {
       const tag = n.parentElement?.tagName?.toLowerCase();
@@ -1614,9 +1804,9 @@ async function isStillBatching() {
   return !!d.isBatching;
 }
 
-function waitForBody(fn) {
+function waitForBody(intervalMs, fn) {
   if (document.body) return fn();
-  const id = setInterval(() => { if (document.body) { clearInterval(id); fn(); } }, 80);
+  const id = setInterval(() => { if (document.body) { clearInterval(id); fn(); } }, intervalMs);
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -1624,10 +1814,10 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Polling waitFor helper
 function waitFor(fn, timeout = 10000, interval = 300) {
   return new Promise(res => {
-    const id = setInterval(() => { 
+    const id = setInterval(() => {
       if (window.__prelabAborted) { clearInterval(id); res(null); return; }
-      const v = fn(); 
-      if (v) { clearInterval(id); res(v); } 
+      const v = fn();
+      if (v) { clearInterval(id); res(v); }
     }, interval);
     setTimeout(() => { clearInterval(id); res(null); }, timeout);
   });
@@ -1671,7 +1861,7 @@ function startSnipTool(ai, prompt) {
     const w = Math.abs(e.clientX - startX), h = Math.abs(e.clientY - startY);
     if (w < 20 || h < 20) return;
     overlay.remove();
-    const full    = await captureTab();
+    const full = await captureTab();
     const cropped = await cropImage(full, x, y, w, h);
     dispatch(ai, { type: 'image', dataUrl: cropped, prompt });
   });
@@ -1687,7 +1877,7 @@ function cropImage(dataUrl, x, y, w, h) {
     const img = new Image();
     img.onload = () => {
       const dpr = window.devicePixelRatio || 1;
-      const c   = document.createElement('canvas');
+      const c = document.createElement('canvas');
       c.width = w * dpr; c.height = h * dpr;
       c.getContext('2d').drawImage(img, x * dpr, y * dpr, w * dpr, h * dpr, 0, 0, w * dpr, h * dpr);
       res(c.toDataURL('image/png'));
