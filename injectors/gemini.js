@@ -18,18 +18,19 @@
   const ui = buildGeminiUI();
   let aborted = false;
 
-  ui.stopBtn.addEventListener('click', () => {
-    aborted = true;
-    setGStatus('❌ Dibatalkan.', 100, '#ff453a');
-    setTimeout(() => ui.root.remove(), 3000);
-  });
-
+  // setGStatus definisikan lebih awal agar siap digunakan di stop handler
   const setGStatus = (msg, pct = null, barColor = null) => {
     if (aborted) return;
     ui.status.innerHTML = msg;
     if (pct !== null) ui.bar.style.width = pct + '%';
     if (barColor) ui.bar.style.background = barColor;
   };
+
+  ui.stopBtn.addEventListener('click', () => {
+    aborted = true;
+    setGStatus('❌ Dibatalkan.', 100, '#ff453a');
+    setTimeout(() => ui.root.remove(), 3000);
+  });
 
   // ── Wait for Gemini editor ─────────────────────────────────────────────────
   const inputEl = await waitFor(() =>
@@ -69,6 +70,10 @@
   setGStatus('🚀 Mengirim…', 85);
   await sleep(600);
 
+  // Ambil jumlah bubble SEBELUM klik send agar tahu mana bubble respons yang baru
+  const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-author-role="model"], message-content';
+  const initialBubbleCount = document.querySelectorAll(BUBBLE_SELECTOR).length;
+
   const sent = clickSend();
   if (!sent) {
     setGStatus('❌ Gagal klik tombol Send.', 100, '#ff453a');
@@ -78,7 +83,7 @@
 
   setGStatus('⏳ Menunggu respons AI…', 90);
   if (payload.type === 'solve_image') {
-    await observeAndExtractJson(setGStatus, () => aborted);
+    await observeAndExtractJson(setGStatus, () => aborted, initialBubbleCount);
   } else {
     setTimeout(() => ui.root.remove(), 4000);
   }
@@ -105,79 +110,84 @@ DILARANG menulis analisis atau penjelasan teks apapun di luar blok JSON.`;
 }
 
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
-async function observeAndExtractJson(setGStatus, isAborted) {
+async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1) {
   let ticks = 0;
   const MAX_TICKS = 240; // 4 menit
 
-  const existingBubbleCount = document.querySelectorAll(
-    'model-response, .model-response-text, [data-message-author-role="model"], message-content'
-  ).length;
+  const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-author-role="model"], message-content';
   
+  // Jika tidak di-supply, ambil jumlah bubble sekarang
+  const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(BUBBLE_SELECTOR).length;
+
   return new Promise(resolve => {
     const timer = setInterval(() => {
       if (isAborted?.()) { clearInterval(timer); resolve(); return; }
 
       // Ambil bubble respons AI terakhir (bukan seluruh page agar tidak nyangkut di history)
-      const bubbles = document.querySelectorAll(
-        'model-response, .model-response-text, [data-message-author-role="model"], message-content'
-      );
+      const bubbles = document.querySelectorAll(BUBBLE_SELECTOR);
       if (bubbles.length <= existingBubbleCount) { tick(); return; }
       const node  = bubbles[bubbles.length - 1];
       const text  = node.innerText || node.textContent || '';
       if (text.length < 5) return;
 
-      // Cari pasangan kurung kurawal paling luar
-      const s = text.indexOf('{');
+      // ABAIKAN jika instruksi masih merepet soal prompt kita
+      if (text.includes('[TEKS_JAWABAN]') || text.includes('[NOMOR]')) { tick(); return; }
+
+      // STRATEGI ABSOLUT: Cari kata kunci terakhir "jawaban" di dalam respons stream AI
+      const jPos = text.lastIndexOf('"jawaban"');
+      if (jPos === -1) { tick(); return; }
+
+      // Cari posisi KITA BENAR-BENAR BERADA DI DALAM OBJEK JSON (ABAIKAN KODE DI AWAL RESPON!)
+      const s = text.lastIndexOf('{', jPos);
       const e = text.lastIndexOf('}');
       if (s === -1 || e <= s) { tick(); return; }
 
       const block = text.slice(s, e + 1);
-      // Pastikan block mengandung kata "jawaban" dan bukan blok prompt kita sendiri
-      if (!block.includes('jawaban') || block.includes('TEKS_JAWABAN') || block.includes('[NOMOR]')) { tick(); return; }
 
-      // Normalise smart-quotes before JSON.parse
+      // Normalisasi
       let safe = block
-        .replace(/[""]/g, '"')
-        .replace(/['']/g, "'")
-        .replace(/\\'/g, "'")
-        .replace(/\\n/g, '\\n'); // escape literal newlines
+        .replace(/[\u201C\u201D\u201F]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'");
 
       let jawaban = '', index_pilihan = 0, ok = false;
-
       try {
-        const obj = JSON.parse(safe);
-        jawaban        = Array.isArray(obj.jawaban) ? obj.jawaban : String(obj.jawaban ?? '').trim();
-        index_pilihan  = Number(obj.index_pilihan ?? 0);
-        ok             = true;
-      } catch (err) {
-        // Fallback cerdas untuk memperbaiki JSON yang cacat
-        try {
-           // Bersihkan markdown atau anomali
-           const fixedJson = safe
-             .replace(/,\s*}/g, '}') // trailing comma
-             .replace(/,\s*]/g, ']') // trailing array comma
-             .replace(/(["\]}])\s*\n\s*(["\[{])/g, '$1,\n$2'); // missing comma between blocks
-           
-           // Bisa juga pakai regex penarik agresif jika parse tetap gagal
-           const jmArray = safe.match(/"jawaban"\s*:\s*\[([\s\S]*?)\]/i);
-           const jmString = safe.match(/"jawaban"\s*:\s*"([\s\S]*?)"(?=\s*,\s*"index_pilihan"|\s*\})/i);
-           const im = safe.match(/"index_pilihan"\s*:\s*(\d+)/i);
+         // Agar literal newline \n (misal dari "innerText") yang berada **di dalam string jawaban** 
+         // tidak merusak JSON.parse, kita gunakan trik aman dengan regex fallback jika gagal:
+         
+         // 1. Coba parse murni (Berhasil jika JSON stream dari Gemini diformat sempurna (Seringkali begitu)).
+         let obj;
+         try {
+             obj = JSON.parse(safe);
+         } catch(err) {
+             // 2. Jika gagal karena literal newline, kita amankan:
+             let sanitized = safe.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t');
+             // Kembalikan newline/whitespace di luar string "jawaban": "..." ke bentuk riil:
+             sanitized = sanitized.replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, ''); 
+             // Trik: JSON parsing manual pakai regex (paling ampuh)
+             const matchArr = safe.match(/"jawaban"\s*:\s*\[([\s\S]*?)\]\s*(?:,\s*"index_pilihan"|\})/i);
+             const matchStr = safe.match(/"jawaban"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"index_pilihan"|\})/i);
+             const matchIdx = safe.match(/"index_pilihan"\s*:\s*(\d+)/i);
+             
+             if (matchArr) {
+                obj = {
+                   jawaban: [...matchArr[1].matchAll(/"([\s\S]*?)"/g)].map(m => m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')),
+                   index_pilihan: matchIdx ? parseInt(matchIdx[1]) : 0
+                };
+             } else if (matchStr) {
+                obj = {
+                   jawaban: matchStr[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'),
+                   index_pilihan: matchIdx ? parseInt(matchIdx[1]) : 0
+                };
+             } else {
+                throw new Error("Fallback failed");
+             }
+         }
 
-           if (jmArray) {
-             // Kalau array, pecah manual lewat regex yang agak aman
-             let arrTxt = jmArray[1];
-             let elements = [...arrTxt.matchAll(/"([\s\S]*?)"/g)].map(m => m[1]);
-             jawaban = elements;
-             index_pilihan = im ? parseInt(im[1]) : 0;
-             ok = elements.length > 0;
-           } else if (jmString) {
-             jawaban = jmString[1];
-             index_pilihan = im ? parseInt(im[1]) : 0;
-             ok = true;
-           }
-        } catch (e2) {
-           console.warn("[Prelab] Fatal fallback json:", e2);
-        }
+         jawaban = Array.isArray(obj.jawaban) ? obj.jawaban : String(obj.jawaban ?? '').trim();
+         index_pilihan = Number(obj.index_pilihan ?? 0);
+         ok = true;
+      } catch (e2) {
+         // Silently fail, it will just loop again until parsing succeeds (AI output completes)
       }
 
       const isNullish = typeof jawaban === 'string' && (jawaban.toLowerCase() === 'null' || jawaban.toLowerCase() === 'undefined');
@@ -192,9 +202,9 @@ async function observeAndExtractJson(setGStatus, isAborted) {
       }
 
       tick();
+
       function tick() {
         ticks++;
-        // Live countdown setiap detik
         if (ticks < MAX_TICKS) {
           const mnt = Math.floor(ticks / 60);
           const dtk = ticks % 60;
@@ -204,7 +214,6 @@ async function observeAndExtractJson(setGStatus, isAborted) {
         if (ticks > MAX_TICKS) {
           clearInterval(timer);
           setGStatus('⏰ Timeout! Meminta LMS untuk retry soal ini...', 100, '#ff9f0a');
-          // Kirim sinyal timeout ke background → background relay ke LMS → LMS retry soal
           chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
           setTimeout(() => resolve(), 1500);
         }

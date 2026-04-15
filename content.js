@@ -2,10 +2,50 @@
 // Guard: jangan double-inject saat executeScript dipanggil manual
 'use strict';
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Constants
+// ══════════════════════════════════════════════════════════════════════════════
+const MAX_SOLVE_RETRIES = 3;
+const MAX_PRECHECK_RETRIES = 3;
+const MAX_PRECHECK_WAIT_MS = 25000;
+const MAX_CHECK_POLL_TICKS = 30;
+const CHECK_POLL_INTERVAL_MS = 500;
+const MOODLE_RENDER_DELAY_MS = 10000;
+const CHECK_FEEDBACK_DELAY_MS = 2500;
+const CHECK_NAVIGATE_DELAY_MS = 1200;
+const PRECHECK_FLOW_DELAY_MS = 1500;
+const PRECHECK_CLEAR_DELAY_MS = 1000;
+const ERROR_SCREENSHOT_DELAY_MS = 1000;
+const MAX_ERROR_LOGS = 30;
+
+const POLL_INTERVALS = {
+  QUESTION_LOAD: 300,
+  QUESTION_LOAD_MAX_TICKS: 10,
+  BODY_WAIT: 80,
+};
+
+const TIMEOUTS = {
+  PRECHECK_RESULT: 25000,
+  CAPTURE_DELAY: 2000,
+  NAVIGATE_DELAY: 1200,
+  CHECK_DELAY: 1500,
+  ERROR_UI_REMOVE: 4000,
+  SUCCESS_UI_REMOVE: 3000,
+  SUMMARY_UI_REMOVE: 5000,
+  GENERIC_RETRY_DELAY: 3200,
+  ERROR_LOG_REMOVE: 7000,
+};
+
+const LMS_HOSTS = [
+  'praktikum.gunadarma.ac.id',
+  'v-class.gunadarma.ac.id',
+];
+
 if (!window.__prelabAI) {
   window.__prelabAI = true;
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  // Simpan referensi listener agar bisa di-remove saat extension reload
+  const _prelabListener = (msg) => {
     if (msg.action === 'START') return handleStart(msg);
 
     // Untuk FILL_ANSWER dan RETRY, pastikan isBatching masih true.
@@ -18,7 +58,9 @@ if (!window.__prelabAI) {
       if (msg.action === 'FILL_ANSWER') executeFillAnswer(msg.data);
       if (msg.action === 'RETRY_SOLVE') retrySolve();
     });
-  });
+  };
+  window.__prelabListener = _prelabListener;
+  chrome.runtime.onMessage.addListener(_prelabListener);
 
   // Restore UI jika halaman baru dimuat dan sesi masih berjalan
   chrome.storage.local.get(['isBatching', 'ai', 'batchPrompt'], d => {
@@ -257,8 +299,10 @@ function setStatus(msg, ui = document.getElementById('pai-ui')) {
 async function handleSolve(ai, prompt, isRetry = false) {
   const d = await storageGet(['isBatching']);
   if (!d.isBatching) return;
-  
+
   if (!isRetry) {
+    // Reset abort flag saat memulai solve baru
+    window.__prelabAborted = false;
     await chrome.storage.local.set({ solveRetryCount: 0, precheckRetryCount: 0 });
     await chrome.storage.local.remove(['precheckError', 'precheckCode']);
   }
@@ -321,7 +365,7 @@ async function handleSolve(ai, prompt, isRetry = false) {
     if (allHaveFeedback) {
       setStatus('📋 Soal sudah dijawab, navigasi ke berikutnya...', ui);
       await sleep(800);
-      navigateNext(msg => setStatus(msg, ui));
+      navigateNext(s => setStatus(s, ui));
       return;
     }
 
@@ -424,7 +468,12 @@ Ini percobaan ke-${d.precheckRetryCount || 1}.`;
 // ══════════════════════════════════════════════════════════════════════════════
 // FILL ANSWER — Router
 // ══════════════════════════════════════════════════════════════════════════════
-function executeFillAnswer(json) {
+async function executeFillAnswer(json) {
+  // Cek abort flag sebelum mengisi jawaban
+  if (window.__prelabAborted) return;
+  const d = await new Promise(r => chrome.storage.local.get(['isBatching'], r));
+  if (!d.isBatching) return;
+
   const platform = detectPlatform();
   console.log(`[Prelab] Fill answer on platform: ${platform}`, json);
 
@@ -436,7 +485,7 @@ function executeFillAnswer(json) {
 // ══════════════════════════════════════════════════════════════════════════════
 // iLab (Moodle) — Fill Answer
 // ══════════════════════════════════════════════════════════════════════════════
-function ilabFillAnswer(json) {
+async function ilabFillAnswer(json) {
   const ui          = document.getElementById('pai-ui');
   const status      = msg => setStatus(msg, ui);
   
@@ -480,7 +529,7 @@ function ilabFillAnswer(json) {
 
   // ── CodeRunner ────────────────────────────────────────────────────────────
   if (type === 'coderunner') {
-    filled = ilabFillCodeRunner(queEl, originalJaw, status);
+    filled = await ilabFillCodeRunner(queEl, originalJaw, status);
     if (filled) {
       // CodeRunner: lakukan PRECHECK dulu, jangan langsung navigate
       setTimeout(() => ilabPrecheckFlow(queEl, status), 1500);
@@ -508,7 +557,7 @@ function ilabFillAnswer(json) {
 // iLab: PRECHECK → Retry → CHECK → Navigate (untuk CodeRunner)
 // ══════════════════════════════════════════════════════════════════════════════
 
-var MAX_PRECHECK_RETRIES = 3;  // var agar tidak error saat re-inject
+
 
 async function ilabPrecheckFlow(queEl, status) {
   if (!(await isStillBatching())) return;
@@ -540,6 +589,31 @@ async function ilabPrecheckFlow(queEl, status) {
     return ilabCheckAndNavigate(queEl, status);
   }
 
+  // Tunda lebih lama agar efek 'refresh' AJAX Moodle & DOM redraw selesai
+  status('⏳ Sinkronisasi layout Moodle (10 detik)...');
+  await sleep(10000);
+  
+  // Re-query resultEl jaga-jaga kalau dom Moodle me-replace elementnya (stale DOM)
+  const freshResultEl = queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || resultEl;
+
+  // Scroll menggunakan teknik agresif untuk scrollable containers di Moodle
+  try {
+    // 1st attempt: Native scrollIntoView ke posisi tengah agar kode (atas) & hasil (bawah) terlihat
+    freshResultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    
+    // 2nd fallback: Moodle sering punya overflow di tag tertentu (#page, #region-main, dll)
+    const container = freshResultEl.closest('.que, #region-main, #page, .scrollable, [style*="overflow"]');
+    if (container) {
+      container.scrollTop = container.scrollHeight; // paksa scroll container
+    }
+  } catch(e) {
+    try {
+      const fallback = queEl.querySelector('.answer, .formulation') || queEl;
+      fallback.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } catch(_){}
+  }
+  await sleep(1000);
+
   // Parse hasil PRECHECK
   const resultText = (resultEl.innerText || resultEl.textContent || '').trim();
   const isPassed = parsePrecheckResult(resultText, resultEl);
@@ -556,6 +630,14 @@ async function ilabPrecheckFlow(queEl, status) {
 
   if (retryCount >= MAX_PRECHECK_RETRIES) {
     status(`❌ PRECHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot agar Anda bisa koreksi manual.`);
+    // Scroll ke hasil error agar kode + tabel Got/Expected ter-capture di screenshot
+    try {
+      const freshResultEl = queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || resultEl;
+      freshResultEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const container = freshResultEl.closest('.que, #region-main, #page');
+      if (container) container.scrollTop = container.scrollHeight;
+    } catch(e){}
+    await sleep(1000); // tunggu scroll selesai sebelum screenshot
     await saveErrorScreenshot(queEl, resultText);
     chrome.storage.local.set({ isBatching: false });
     window.__prelabAborted = true;
@@ -625,9 +707,26 @@ function parsePrecheckResult(text, el) {
     }
   }
   
-  // Cek tabel Coderunner: samakan Expected dan Got
+  // Cek tabel Coderunner: prioritaskan centang hijau (Pass/✓/.correct) terlebih dahulu
   const rows = el.querySelectorAll('tr');
   if (rows.length > 1) {
+    // Strategy 1: Centang Hijau / class correct
+    const allPassed = [...rows].slice(1).every(row => {
+      // Jika seluruh row di-flag correct
+      if (row.classList.contains('correct') || row.classList.contains('pass')) return true;
+      const cells = row.querySelectorAll('td');
+      // Cari apakah ada cell yang memiliki centang hijau atau class correct
+      return [...cells].some(c => 
+        c.classList.contains('correct') || 
+        c.classList.contains('pass') ||
+        c.innerText?.includes('✓') || 
+        c.innerText?.includes('Pass')
+      );
+    });
+    // Jika semua row memiliki tanda lulus, maka benar!
+    if (allPassed) return true;
+
+    // Strategy 2: Samakan string Expected dan Got (Lebih mentolerir spasi)
     let expectedIdx = -1;
     let gotIdx = -1;
     
@@ -640,29 +739,18 @@ function parsePrecheckResult(text, el) {
     });
 
     if (expectedIdx !== -1 && gotIdx !== -1) {
-      // Jika ada kolom Expected dan Got, bandingkan tiap baris data
+      // Jika ada kolom Expected dan Got, membandingkan isinya mengabaikan whitespace ganda
       const allMatched = [...rows].slice(1).every(row => {
         const cells = row.querySelectorAll('td');
         if (!cells[expectedIdx] || !cells[gotIdx]) return true; // abaikan jika baris tidak lengkap
-        const expected = (cells[expectedIdx].innerText || cells[expectedIdx].textContent || '').trim();
-        const got = (cells[gotIdx].innerText || cells[gotIdx].textContent || '').trim();
+        const expected = (cells[expectedIdx].innerText || cells[expectedIdx].textContent || '').trim().replace(/\s+/g, ' ');
+        const got = (cells[gotIdx].innerText || cells[gotIdx].textContent || '').trim().replace(/\s+/g, ' ');
         return expected !== '' && expected === got; 
       });
       if (allMatched) return true;
-      // Jika Expected dan Got ditemukan tapi tidak match, pasti gagal (salah)
+      // Jika hijau gagal, dan text match gagal, maka ini pasti salah.
       return false;
     }
-
-    // Fallback: Check for green tick marks in the table
-    const allPassed = [...rows].slice(1).every(row => {
-      const cells = row.querySelectorAll('td');
-      const lastCell = cells[cells.length - 1];
-      return lastCell?.classList.contains('correct') || 
-             lastCell?.textContent?.includes('✓') ||
-             lastCell?.textContent?.includes('Pass') ||
-             row.classList.contains('correct');
-    });
-    if (allPassed) return true;
   }
 
   // Explicit fail indicators
@@ -676,9 +764,10 @@ function parsePrecheckResult(text, el) {
 }
 
 // Clear precheck result from DOM so it doesn't interfere with next precheck
+// PENTING: Tidak hapus [id*="feedback"] atau .outcome global - terlalu agresif.
 function clearPrecheckResult(queEl) {
   const results = queEl.querySelectorAll(
-    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .outcome .feedback, .outcome, .coderunnerresults, table.coderunner_test_results, .precheck-results, [id*="feedback"]'
+    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results'
   );
   results.forEach(el => { try { el.innerHTML = ''; } catch {/***/} });
 }
@@ -735,6 +824,16 @@ async function ilabCheckAndNavigate(queEl, status) {
     if (!ajaxDone) {
       status('⚠️ CHECK selesai, tidak ada respons AJAX yang terdeteksi.');
     } else {
+      // Tunda ekstra karena feedback sesudah CHECK butuh waktu untuk render di Moodle
+      await sleep(2500);
+      try { 
+        const feedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results, .precheck-results') || queEl.querySelector('.answer, .formulation') || queEl;
+        feedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' }); 
+        const container = feedbackEl.closest('.que, #region-main, #page, .scrollable, [style*="overflow"]');
+        if (container) container.scrollTop = container.scrollHeight;
+      } catch(e) {}
+      await sleep(1000);
+
       // Cek hasil CHECK
       const isCorrect = checkIfCorrect(queEl);
       if (isCorrect === true) {
@@ -746,6 +845,16 @@ async function ilabCheckAndNavigate(queEl, status) {
         if (retryCount >= MAX_PRECHECK_RETRIES) {
           status(`❌ CHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot.`);
           const questionText = queEl.querySelector('.qtext')?.innerText?.trim() || '';
+          
+          // Pastikan scroll berada di feedback table sebelum screenshot
+          try {
+             const freshFeedbackEl = queEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || queEl;
+             freshFeedbackEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+             const container = freshFeedbackEl.closest('.que, #region-main, #page, .scrollable');
+             if (container) container.scrollTop = container.scrollHeight;
+          } catch(e) {}
+          await sleep(1000);
+
           await saveErrorScreenshot(queEl, `CHECK failed: ${questionText.slice(0, 100)}`);
           chrome.storage.local.set({ isBatching: false });
           window.__prelabAborted = true;
@@ -1047,7 +1156,7 @@ function ilabFillEssay(queEl, jawaban, status) {
 }
 
 // ── iLab: CodeRunner filler (FIXED: preserves template code) ────────────────
-function ilabFillCodeRunner(queEl, jawaban, status) {
+async function ilabFillCodeRunner(queEl, jawaban, status) {
   // Check for GapFill / inline <input> first! Many do not have explict type="text".
   const inlineInputs = [...queEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])')].filter(el => {
     return el.offsetParent !== null && !el.classList.contains('ace_text-input');
@@ -1090,6 +1199,7 @@ function ilabFillCodeRunner(queEl, jawaban, status) {
       // kita gunakan selectAll + insert yang secara otomatis mematuhi batas read-only!
       try {
         editor.selection.selectAll();
+        editor.remove(); // Delete whatever we selected first
         editor.insert(jText);
         syncAceToTextarea(queEl);
         highlightElement(queEl.querySelector('.ace_editor'));
@@ -1102,24 +1212,18 @@ function ilabFillCodeRunner(queEl, jawaban, status) {
   }
 
   // Method 2: Ace text-input paste (select all → paste full code)
+  // FIXED: Gunakan native Ctrl+A & Backspace agar kode lama terhapus tuntas
   const aceInput = queEl.querySelector('.ace_text-input');
   if (aceInput) {
     aceInput.focus();
-
-    // Gunakan perintah browser native untuk menyeleksi semua teks (lama)
-    document.execCommand('selectAll', false, null);
-    
-    // Fallback delete events in case it's a protected Ace Editor region
-    aceInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', keyCode: 46, bubbles: true }));
-    aceInput.dispatchEvent(new KeyboardEvent('keyup',   { key: 'Delete', keyCode: 46, bubbles: true }));
-    
-    // Small delay then paste
-    setTimeout(() => {
-      const dt = new DataTransfer();
-      dt.setData('text/plain', jText);
-      aceInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
-    }, 100);
-    
+    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    aceInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', keyCode: 65, ctrlKey: !isMac, metaKey: isMac, bubbles: true }));
+    await sleep(100);
+    aceInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, bubbles: true }));
+    await sleep(150);
+    const dt = new DataTransfer();
+    dt.setData('text/plain', jText);
+    aceInput.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
     highlightElement(queEl.querySelector('.ace_editor') || aceInput);
     status('✅ Kode diisi (Ace paste).');
     return true;
@@ -1348,6 +1452,11 @@ function findUnansweredQuestion(questions) {
     }
     const textInput = q.querySelector('input[type="text"]');
     if (textInput && !textInput.value.trim()) {
+      return q;
+    }
+    // También verifica textarea vacía (CodeRunner / Essay)
+    const textArea = q.querySelector('textarea:not([hidden])');
+    if (textArea && !textArea.value.trim()) {
       return q;
     }
   }

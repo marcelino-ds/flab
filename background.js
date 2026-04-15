@@ -1,24 +1,23 @@
 // ── Background service worker ─────────────────────────────────────────────────
 'use strict';
 
-// Cleanup stale session saat extension/browser restart
-chrome.runtime.onStartup.addListener(() => {
-  chrome.storage.local.remove([
-    'isBatching', 'batchTabId', 'pendingTabId', 'prelabPayload',
-    'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount',
-    'batchScreenshots', // key orphan, tidak pernah dipakai
-  ]);
-  console.log('[Prelab BG] Stale session cleared on startup.');
-});
+// Keys yang perlu dibersihkan saat sesi lama stale
+const STALE_KEYS = [
+  'isBatching', 'batchTabId', 'pendingTabId', 'prelabPayload',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount',
+];
 
-// Juga cleanup saat extension di-install/update
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.remove([
-    'isBatching', 'batchTabId', 'pendingTabId', 'prelabPayload',
-    'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount',
-    'batchScreenshots',
-  ]);
-});
+function clearStaleSession(reason) {
+  chrome.storage.local.remove(STALE_KEYS, () => {
+    console.log(`[Prelab BG] Stale session cleared (${reason}).`);
+  });
+}
+
+// Cleanup saat extension/browser restart
+chrome.runtime.onStartup.addListener(() => clearStaleSession('startup'));
+
+// Cleanup saat extension di-install/update
+chrome.runtime.onInstalled.addListener(() => clearStaleSession('install/update'));
 
 const GEMINI_URL = 'https://gemini.google.com/app';
 
@@ -51,6 +50,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         ai: 'gemini',
         mode: d.activeMode || 'solve',
         prompt: d.batchPrompt || '',
+      }, () => {
+        if (chrome.runtime.lastError) { /* tab mungkin belum siap, abaikan */ }
       });
     });
   });
@@ -92,7 +93,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       // Close Gemini shadow tab after extracting answer
       if (sender.tab?.id) {
-        setTimeout(() => chrome.tabs.remove(sender.tab.id), 500);
+        setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
+          if (chrome.runtime.lastError) { /* tab sudah tutup */ }
+        }), 500);
       }
     });
     return true;
@@ -110,7 +113,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       // Tutup tab Gemini yang gagal / hang
       if (sender.tab?.id) {
-        setTimeout(() => chrome.tabs.remove(sender.tab.id), 700);
+        setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
+          if (chrome.runtime.lastError) { /* tab sudah tutup */ }
+        }), 700);
       }
     });
     return true;
@@ -140,15 +145,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Sinyal batal penuh dari user
+  // Sinyal batal penuh dari user — bersihkan SEMUA state sesi
   if (msg.action === 'STOP_PROCESS') {
     chrome.storage.local.get(['pendingTabId'], d => {
       if (d.pendingTabId) {
         chrome.tabs.remove(d.pendingTabId, () => {
-           if(chrome.runtime.lastError) console.warn('[Prelab] tab remove error', chrome.runtime.lastError);
+          if (chrome.runtime.lastError) console.warn('[Prelab] tab remove error', chrome.runtime.lastError);
         });
-        chrome.storage.local.remove(['pendingTabId']);
       }
+      // Hapus semua key sesi termasuk isBatching agar bot benar-benar berhenti
+      chrome.storage.local.remove(STALE_KEYS);
     });
     return true;
   }
