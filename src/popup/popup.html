@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      background: transparent;
+      border-radius: 20px;
+    }
+
+    body {
+      width: 310px;
+      margin: 8px;
+      background: #1C1C1E;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      color: #F5F5F7;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      user-select: none;
+      /* Rounded edges macOS style */
+      border-radius: 20px;
+      overflow: hidden;
+    }
+
+    .hdr {
+      padding: 18px 20px 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 0px;
+      /* no border, cleaner look */
+      background: transparent;
+      border-radius: 20px 20px 0 0;
+    }
+
+    .brand {
+      font-size: 16px;
+      font-weight: 600;
+      color: #FFF;
+      letter-spacing: -0.2px;
+    }
+
+    .platform-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 4px 8px;
+      border-radius: 20px;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+    }
+
+    .platform-badge.ilab {
+      background: rgba(50, 215, 75, 0.15);
+      color: #32D74B;
+    }
+
+    .platform-badge.vclass {
+      background: rgba(10, 132, 255, 0.15);
+      color: #0A84FF;
+    }
+
+    .platform-badge.unknown {
+      background: rgba(142, 142, 147, 0.15);
+      color: #8E8E93;
+    }
+
+    .body {
+      padding: 4px 20px 20px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .disclaimer,
+    .info-box {
+      font-size: 11px;
+      line-height: 1.4;
+      color: rgba(235, 235, 245, 0.6);
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+
+    .sec-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: #EBEBF5;
+      margin-bottom: 8px;
+    }
+
+    textarea {
+      width: 100%;
+      background: rgba(118, 118, 128, 0.12);
+      border: 1px solid transparent;
+      border-radius: 12px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 12px;
+      outline: none;
+      resize: none;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      min-height: 70px;
+      line-height: 1.4;
+    }
+
+    textarea:focus {
+      background: rgba(118, 118, 128, 0.24);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    textarea::placeholder {
+      color: rgba(235, 235, 245, 0.3);
+    }
+
+    .send-btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 14px;
+      background: linear-gradient(135deg, #FFFFFF 0%, #E8E8ED 100%);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 0 0 0.5px rgba(255, 255, 255, 0.2);
+      color: #1C1C1E;
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .send-btn:hover {
+      background: linear-gradient(135deg, #FFFFFF 0%, #D1D1D6 100%);
+    }
+
+    .send-btn:active {
+      background: linear-gradient(135deg, #E8E8ED 0%, #C7C7CC 100%);
+    }
+
+    .send-btn:disabled {
+      background: rgba(118, 118, 128, 0.3);
+      color: rgba(255, 255, 255, 0.4);
+      cursor: not-allowed;
+    }
+
+    .status {
+      font-size: 11px;
+      text-align: center;
+      color: rgba(235, 235, 245, 0.6);
+      min-height: 14px;
+      font-weight: 500;
+    }
+
+    .status.err {
+      color: #FF6961;
+    }
+
+    .status.ok {
+      color: #32D74B;
+    }
+
+    .version {
+      font-size: 10px;
+      color: #c4c4c4;
+      text-align: center;
+      padding-bottom: 8px;
+    }
+
+    .log-btn {
+      width: 100%;
+      padding: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      background: rgba(118, 118, 128, 0.12);
+      color: rgba(235, 235, 245, 0.7);
+      font-family: inherit;
+      font-weight: 500;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .log-btn:hover {
+      background: rgba(118, 118, 128, 0.2);
+      color: #fff;
+    }
+
+    .log-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 260px;
+      overflow-y: auto;
+      margin-top: 10px;
+    }
+
+    .log-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .log-clear {
+      font-size: 11px;
+      color: #FF6961;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .log-entry {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .log-date {
+      font-size: 10px;
+      color: #8E8E93;
+      font-weight: 500;
+    }
+
+    .log-q {
+      font-size: 11.5px;
+      color: #EBEBF5;
+      line-height: 1.4;
+    }
+
+    .log-err {
+      font-size: 11px;
+      color: #FF8A80;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 90px;
+      overflow-y: auto;
+    }
+
+    .log-img {
+      width: 100%;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      cursor: zoom-in;
+      transition: all 0.2s ease;
+    }
+
+    .log-img.expanded {
+      cursor: zoom-out;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="hdr">
+    <div class="brand">flab</div>
+    <span class="platform-badge unknown" id="platformBadge">—</span>
+  </div>
+
+  <div class="body">
+    <div class="disclaimer">
+      <strong>Catatan:</strong> Tools ini hanya untuk otomasi. Benar atau tidaknya jawaban sepenuhnya tergantung dari
+      respons AI.
+    </div>
+
+    <div>
+      <div class="sec-label">Instruksi Tambahan</div>
+      <textarea id="prompt" placeholder="Contoh: Gunakan perulangan..."></textarea>
+    </div>
+
+    <div>
+      <button class="send-btn" id="sendBtn">Mulai Proses</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <button class="log-btn" id="logBtn">Lihat Log Error</button>
+    <div class="log-list" id="logList" style="display:none;"></div>
+
+    <div class="version">v2.0.0</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>

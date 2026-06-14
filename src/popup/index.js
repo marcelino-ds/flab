@@ -1,11 +1,16 @@
 // ── Popup script ──────────────────────────────────────────────────────────────
 'use strict';
 
+import { escapeHtml } from '../shared/util.js';
+
 const $ = id => document.getElementById(id);
 
+// Daftar KANONIK semua key state sesi (HARUS identik dengan STALE_KEYS di background.js).
+// TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
 const SESSION_KEYS = [
-  'solveRetryCount', 'precheckError', 'precheckCode',
-  'precheckRetryCount', 'pendingTabId', 'prelabPayload',
+  'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
+  'activeMode', 'batchPrompt', 'ai', 'current', 'total',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount',
 ];
 
 const LMS_PLATFORMS = {
@@ -28,7 +33,6 @@ async function detectPlatform() {
 (async () => {
   const { platform } = await detectPlatform();
   const badge = $('platformBadge');
-  const info  = $('infoBox');
   const btn   = $('sendBtn');
 
   // Platform badge
@@ -37,13 +41,9 @@ async function detectPlatform() {
   badge.textContent = labels[platform];
 
   if (platform === 'unknown') {
-    info.style.display = 'block';
-    info.textContent = 'Buka halaman quiz di praktikum.gunadarma.ac.id terlebih dahulu.';
     btn.disabled = true;
-    btn.textContent = 'Bukan halaman LMS';
-  } else if (platform === 'vclass') {
-    info.style.display = 'block';
-    info.innerHTML = 'vClass belum dioptimasi, pakai logika iLab sebagai fallback.';
+    btn.textContent = 'Bukan Halaman LMS';
+    setStatus('Menunggu halaman valid');
   }
 })();
 
@@ -67,7 +67,7 @@ $('sendBtn').addEventListener('click', async () => {
     // Bersihkan state sesi lama sebelum mulai ─ hindari state corrupt dari run sebelumnya
     await new Promise(res => chrome.storage.local.remove(SESSION_KEYS, res));
 
-    // Inject content.js (idempotent karena ada guard window.__prelabAI)
+    // Inject content.js (idempotent karena ada guard window.__flabAI)
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 
     // Set state sesi baru
@@ -93,7 +93,7 @@ $('sendBtn').addEventListener('click', async () => {
     setTimeout(() => window.close(), 1000);
 
   } catch (e) {
-    console.error('[Prelab Popup] Start error:', e);
+    console.error('[FLAB Popup] Start error:', e);
     setStatus('Error: Buka halaman LMS dulu', 'err');
     $('sendBtn').disabled = false;
   }
@@ -105,6 +105,9 @@ chrome.runtime.onMessage.addListener(msg => {
     setStatus('Error: ' + msg.msg, 'err');
     $('sendBtn').disabled = false;
   }
+  if (msg.action === 'PROGRESS_UPDATE') {
+    setStatus(`Soal ${msg.current || '?'} dari ${msg.total || '?'}...`, 'ok');
+  }
 });
 
 function setStatus(msg, type = '') {
@@ -112,3 +115,54 @@ function setStatus(msg, type = '') {
   el.textContent = msg;
   el.className   = 'status ' + type;
 }
+
+// ── Error log viewer ────────────────────────────────────────────────────────────
+function renderLogs(logs) {
+  const list = $('logList');
+
+  if (!logs || logs.length === 0) {
+    list.innerHTML = `<div style="text-align:center;color:#8E8E93;font-size:11px;padding:12px;">Belum ada log error.</div>`;
+    return;
+  }
+
+  // Terbaru di atas
+  const sorted = [...logs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+  const head = `
+    <div class="log-head">
+      <span style="font-size:11px;color:#8E8E93;font-weight:600;">${sorted.length} log error</span>
+      <span class="log-clear" id="logClear">Hapus Semua</span>
+    </div>`;
+
+  const entries = sorted.map(log => `
+    <div class="log-entry">
+      <div class="log-date">${escapeHtml(log.date || '')}</div>
+      <div class="log-q">${escapeHtml(log.question || '(tanpa teks soal)')}</div>
+      ${log.error ? `<div class="log-err">${escapeHtml(log.error)}</div>` : ''}
+      ${log.screenshot ? `<img class="log-img" src="${escapeHtml(log.screenshot)}" alt="screenshot error" />` : ''}
+    </div>`).join('');
+
+  list.innerHTML = head + entries;
+
+  $('logClear').addEventListener('click', () => {
+    chrome.storage.local.remove(['errorLogs'], () => renderLogs([]));
+  });
+
+  list.querySelectorAll('.log-img').forEach(img => {
+    img.addEventListener('click', () => img.classList.toggle('expanded'));
+  });
+}
+
+$('logBtn').addEventListener('click', () => {
+  const list = $('logList');
+  const opening = list.style.display === 'none';
+
+  if (opening) {
+    chrome.storage.local.get(['errorLogs'], d => renderLogs(d.errorLogs || []));
+    list.style.display = 'flex';
+    $('logBtn').textContent = 'Sembunyikan Log';
+  } else {
+    list.style.display = 'none';
+    $('logBtn').textContent = 'Lihat Log Error';
+  }
+});

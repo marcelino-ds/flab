@@ -1,15 +1,17 @@
 // ── Background service worker ─────────────────────────────────────────────────
 'use strict';
 
-// Keys yang perlu dibersihkan saat sesi lama stale
+// Daftar KANONIK semua key state sesi (HARUS identik dengan SESSION_KEYS di popup.js).
+// TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
 const STALE_KEYS = [
-  'isBatching', 'batchTabId', 'pendingTabId', 'prelabPayload',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount',
+  'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
+  'activeMode', 'batchPrompt', 'ai', 'current', 'total',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount'
 ];
 
 function clearStaleSession(reason) {
   chrome.storage.local.remove(STALE_KEYS, () => {
-    console.log(`[Prelab BG] Stale session cleared (${reason}).`);
+    console.log(`[FLAB BG] Stale session cleared (${reason}).`);
   });
 }
 
@@ -42,7 +44,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
     chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }, () => {
       if (chrome.runtime.lastError) {
-        console.warn('[Prelab BG] executeScript error:', chrome.runtime.lastError.message);
+        console.warn('[FLAB BG] executeScript error:', chrome.runtime.lastError.message);
         return;
       }
       chrome.tabs.sendMessage(tabId, {
@@ -59,6 +61,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 // ── Message bus ───────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Defense-in-depth: hanya terima pesan dari konteks ekstensi ini sendiri
+  // (content script / popup / injector kita). Tolak origin tak terduga.
+  if (sender.id !== chrome.runtime.id) return;
 
   // Injector asking its own tab ID
   if (msg.action === '__GET_TAB_ID__') {
@@ -72,7 +77,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!windowId) { sendResponse({ dataUrl: null }); return true; }
     chrome.tabs.captureVisibleTab(windowId, { format: 'jpeg', quality: 70 }, dataUrl => {
       if (chrome.runtime.lastError) {
-        console.warn('[Prelab BG] captureVisibleTab error:', chrome.runtime.lastError.message);
+        console.warn('[FLAB BG] captureVisibleTab error:', chrome.runtime.lastError.message);
         sendResponse({ dataUrl: null });
       } else {
         sendResponse({ dataUrl });
@@ -83,11 +88,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Gemini → LMS answer bridge
   if (msg.action === 'SOLVER_JSON_RESULT') {
-    chrome.storage.local.get(['batchTabId'], d => {
+    chrome.storage.local.get(['batchTabId', 'current', 'total'], d => {
+      chrome.runtime.sendMessage({
+        action: 'PROGRESS_UPDATE',
+        current: d.current || '?',
+        total: d.total || '?'
+      }, () => { if(chrome.runtime.lastError){} });
+
       if (d.batchTabId) {
         chrome.tabs.sendMessage(d.batchTabId, { action: 'FILL_ANSWER', data: msg.data }, () => {
           if (chrome.runtime.lastError) {
-            console.warn('[Prelab BG] sendMessage to LMS tab error:', chrome.runtime.lastError.message);
+            console.warn('[FLAB BG] sendMessage to LMS tab error:', chrome.runtime.lastError.message);
           }
         });
       }
@@ -107,7 +118,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (d.batchTabId) {
         chrome.tabs.sendMessage(d.batchTabId, { action: 'RETRY_SOLVE' }, () => {
           if (chrome.runtime.lastError) {
-            console.warn('[Prelab BG] sendMessage RETRY_SOLVE error:', chrome.runtime.lastError.message);
+            console.warn('[FLAB BG] sendMessage RETRY_SOLVE error:', chrome.runtime.lastError.message);
           }
         });
       }
@@ -125,7 +136,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'OPEN_AI') {
     chrome.storage.local.get(['pendingTabId'], d => {
       const openNewTab = () => {
-        chrome.storage.local.set({ prelabPayload: msg.payload }, () => {
+        chrome.storage.local.set({ flabPayload: msg.payload }, () => {
           chrome.tabs.create({ url: GEMINI_URL }, newTab => {
             chrome.storage.local.set({ pendingTabId: newTab.id });
           });
@@ -147,10 +158,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Sinyal batal penuh dari user — bersihkan SEMUA state sesi
   if (msg.action === 'STOP_PROCESS') {
-    chrome.storage.local.get(['pendingTabId'], d => {
+    chrome.storage.local.get(['pendingTabId', 'batchTabId'], d => {
+      // Forward kill signal to LMS tab to instantly stop polling
+      if (d.batchTabId) {
+        chrome.tabs.sendMessage(d.batchTabId, { action: 'STOP_PROCESS' }, () => {
+          if (chrome.runtime.lastError) { /* ignore if tab is closed */ }
+        });
+      }
+      
       if (d.pendingTabId) {
         chrome.tabs.remove(d.pendingTabId, () => {
-          if (chrome.runtime.lastError) console.warn('[Prelab] tab remove error', chrome.runtime.lastError);
+          if (chrome.runtime.lastError) console.warn('[FLAB] tab remove error', chrome.runtime.lastError);
         });
       }
       // Hapus semua key sesi termasuk isBatching agar bot benar-benar berhenti

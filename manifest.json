@@ -1,16 +1,13 @@
 {
   "manifest_version": 3,
-  "name": "Prelab",
+  "name": "flab",
   "version": "2.0.0",
-  "description": "Auto-solve soal praktikum Gunadarma (iLab) via Gemini.",
+  "description": "Chrome MV3 extension — automated Moodle quiz answering via LLM, with structured DOM extraction and answer filling.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage",
-    "unlimitedStorage",
-    "tabs",
-    "clipboardWrite",
-    "clipboardRead"
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://praktikum.gunadarma.ac.id/*",
@@ -37,10 +34,5 @@
       "js": ["injectors/gemini.js"],
       "run_at": "document_idle"
     }
-  ],
-  "icons": {
-    "16":  "icons/icon16.png",
-    "48":  "icons/icon48.png",
-    "128": "icons/icon128.png"
-  }
+  ]
 }
