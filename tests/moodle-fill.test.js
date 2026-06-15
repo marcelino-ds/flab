@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { ilabFillMultichoice } from '../src/content/moodle-fill.js';
+import { moodleFillMultichoice } from '../src/content/moodle-fill.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
 
@@ -19,10 +19,10 @@ function fill(que, originalJaw, idxHint) {
   const jaw = Array.isArray(originalJaw)
     ? originalJaw.map(s => String(s).toUpperCase())
     : String(originalJaw).toUpperCase();
-  return ilabFillMultichoice(que, originalJaw, jaw, idxHint, () => {});
+  return moodleFillMultichoice(que, originalJaw, jaw, idxHint, () => {});
 }
 
-describe('ilabFillMultichoice — single select', () => {
+describe('moodleFillMultichoice — single select', () => {
   it('index & teks sepakat → klik opsi itu', () => {
     const { que, radios } = mc(['Merah', 'Hijau', 'Biru']);
     expect(fill(que, 'Hijau', 2)).toBe(true);
@@ -75,7 +75,7 @@ describe('ilabFillMultichoice — single select', () => {
   });
 });
 
-describe('ilabFillMultichoice — multi select (checkbox)', () => {
+describe('moodleFillMultichoice — multi select (checkbox)', () => {
   it('centang beberapa opsi sesuai array jawaban', () => {
     const { que, radios } = mc(['HTML', 'CSS', 'JS'], 'checkbox');
     expect(fill(que, ['HTML', 'JS'], 0)).toBe(true);

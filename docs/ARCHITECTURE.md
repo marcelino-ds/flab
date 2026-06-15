@@ -111,17 +111,31 @@ adding one registry entry, a manifest host-permission + content-script line, and
 
 The flow engine (`handleSolve`, precheck/check/navigate, router, status UI) stays
 in `content/index.js`. These functions form a cycle
-(`navigateNext → handleStart → handleSolve → ilabCheckAndNavigate → navigateNext`)
+(`navigateNext → handleStart → handleSolve → moodleCheckAndNavigate → navigateNext`)
 and share mutable session state. Splitting them would convert in-file cohesion into
 circular cross-module imports — worse architecture, not better. The extracted
 modules are all **leaves** (one-way dependencies), which is precisely what makes
 them safe to verify by build/unit-test alone. The flow engine is verified by
 running the extension in a real browser.
 
+### 10. Runtime Moodle detection (host-agnostic)
+
+flab targets Moodle generically, not specific campus deployments. Rather than
+maintaining a hostname allow-list, it detects Moodle at **runtime** via DOM markers
+(`isMoodle()` — body classes like `path-mod-quiz`, `.que`/`#responseform` elements,
+or a `/mod/quiz/` path). The content script is registered for `https://*/*` but is
+**passive on non-Moodle pages**: it only registers a message listener and restores
+UI if a session is active; the solve flow is gated on `isMoodlePlatform`.
+
+This is an explicit trade-off: broad host access (`https://*/*`) triggers Chrome's
+"read and change data on all websites" warning, in exchange for working on any
+Moodle instance without code changes. The mitigation is that nothing acts until
+Moodle is detected and the user explicitly starts a session.
+
 ## Security posture
 
-- **Least privilege**: no clipboard permissions; only the host permissions needed.
-- **MV3 CSP friendly**: no remote code, no remote fonts, no `eval`.
+- **Broad host access, runtime-gated**: registered for `https://*/*` to support any Moodle, but inert until `isMoodle()` passes and the user starts a session.
+- **Least privilege otherwise**: no clipboard permissions; no remote code, fonts, or `eval` (MV3 CSP friendly).
 - **Message trust boundary**: handlers validate `sender.id` against the extension's own id.
 - **XSS**: all untrusted text (LLM output, page DOM) is escaped before `innerHTML`.
 - **Transient sensitive data**: error screenshots in `chrome.storage.local` carry a TTL and a hard count cap.

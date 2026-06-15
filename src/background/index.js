@@ -25,21 +25,18 @@ chrome.runtime.onInstalled.addListener(() => clearStaleSession('install/update')
 
 // URL provider LLM di-resolve dari registry berdasarkan payload.ai (default: gemini).
 
-// Allowed LMS hosts
-const LMS_HOSTS = [
-  'praktikum.gunadarma.ac.id',  // iLab
-  'v-class.gunadarma.ac.id',    // vClass
-];
-
-function isLmsUrl(url) {
-  try { return LMS_HOSTS.some(h => new URL(url).hostname === h); }
+// Re-injeksi hanya di tab http(s); pembatasan sebenarnya adalah sesi aktif
+// (isBatching && batchTabId === tabId). Content script punya guard isMoodle()
+// sendiri sehingga halaman non-Moodle tidak diproses.
+function isInjectableUrl(url) {
+  try { return /^https?:$/.test(new URL(url).protocol); }
   catch { return false; }
 }
 
-// ── Re-inject content.js + kick off loop saat halaman LMS berpindah ───────────
+// ── Re-inject content.js + kick off loop saat tab sesi aktif berpindah halaman ──
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
-  if (!tab.url || !isLmsUrl(tab.url)) return;
+  if (!tab.url || !isInjectableUrl(tab.url)) return;
 
   chrome.storage.local.get(['isBatching', 'batchTabId', 'activeMode', 'batchPrompt'], d => {
     if (!d.isBatching || d.batchTabId !== tabId) return;

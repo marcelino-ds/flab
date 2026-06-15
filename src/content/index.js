@@ -14,8 +14,8 @@ import {
 import { detectQuestionImages, extractQuestionImages, stitchImages } from './question-images.js';
 import { getMoodleOptions } from './moodle-options.js';
 import {
-  ilabFillMultichoice, ilabFillShortAnswer, ilabFillEssay,
-  ilabFillCodeRunner, genericFillInQuestion,
+  moodleFillMultichoice, moodleFillShortAnswer, moodleFillEssay,
+  moodleFillCodeRunner, genericFillInQuestion,
 } from './moodle-fill.js';
 
 // Guard idempotensi: bila content.js sudah ter-inject di dokumen ini, hentikan
@@ -147,7 +147,7 @@ async function retrySolve() {
 function renderUI(ai, prompt) {
   let ui = document.getElementById('pai-ui');
   const platform = detectPlatform();
-  const platformLabels = { ilab: 'iLab', vclass: 'vClass', generic: '—' };
+  const platformLabels = { moodle: 'Moodle', generic: '—' };
 
   if (!ui) {
     ui = document.createElement('div');
@@ -239,7 +239,7 @@ async function handleSolve(ai, prompt, isRetry = false) {
 
   const ui = renderUI(ai, prompt);
   const platform = detectPlatform();
-  const isMoodlePlatform = platform === 'ilab' || platform === 'vclass';
+  const isMoodlePlatform = platform === 'moodle';
 
   if (isMoodlePlatform) {
     if (document.readyState !== 'complete') {
@@ -478,14 +478,14 @@ async function executeFillAnswer(json) {
   const platform = detectPlatform();
   console.log(`[FLAB] Fill answer on platform: ${platform}`, json);
 
-  if (platform === 'ilab' || platform === 'vclass') return ilabFillAnswer(json);
+  if (platform === 'moodle') return moodleFillAnswer(json);
   return genericFillAnswer(json);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // iLab (Moodle) — Fill Answer
 // ══════════════════════════════════════════════════════════════════════════════
-async function ilabFillAnswer(json) {
+async function moodleFillAnswer(json) {
   const ui = document.getElementById('pai-ui');
   const status = msg => setStatus(msg, ui);
 
@@ -515,24 +515,24 @@ async function ilabFillAnswer(json) {
 
   // ── Multichoice / True-False ──────────────────────────────────────────────
   if (type === 'multichoice' || type === 'truefalse') {
-    filled = ilabFillMultichoice(queEl, originalJaw, jaw, idxHint, status);
+    filled = moodleFillMultichoice(queEl, originalJaw, jaw, idxHint, status);
   }
 
   // ── Short Answer / Numerical ──────────────────────────────────────────────
   if (type === 'shortanswer' || type === 'numerical') {
-    filled = ilabFillShortAnswer(queEl, originalJaw, status);
+    filled = moodleFillShortAnswer(queEl, originalJaw, status);
   }
 
   // ── Essay ─────────────────────────────────────────────────────────────────
   if (type === 'essay') {
-    filled = ilabFillEssay(queEl, originalJaw, status);
+    filled = moodleFillEssay(queEl, originalJaw, status);
   }
 
   // ── CodeRunner ────────────────────────────────────────────────────────────
   if (type === 'coderunner') {
-    filled = await ilabFillCodeRunner(queEl, originalJaw, status);
+    filled = await moodleFillCodeRunner(queEl, originalJaw, status);
     if (filled) {
-      setTimeout(() => ilabPrecheckFlow(queEl, status), PRECHECK_FLOW_DELAY_MS);
+      setTimeout(() => moodlePrecheckFlow(queEl, status), PRECHECK_FLOW_DELAY_MS);
       return;
     }
   }
@@ -550,7 +550,7 @@ async function ilabFillAnswer(json) {
   }
 
   // ── Non-CodeRunner: langsung navigate (atau CHECK dulu kalau ada) ─────────
-  setTimeout(() => ilabCheckAndNavigate(queEl, status), CHECK_NAVIGATE_DELAY_MS);
+  setTimeout(() => moodleCheckAndNavigate(queEl, status), CHECK_NAVIGATE_DELAY_MS);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -559,7 +559,7 @@ async function ilabFillAnswer(json) {
 
 
 
-async function ilabPrecheckFlow(queEl, status) {
+async function moodlePrecheckFlow(queEl, status) {
   if (!(await isStillBatching())) return;
 
   // Cari tombol PRECHECK
@@ -568,7 +568,7 @@ async function ilabPrecheckFlow(queEl, status) {
   if (!precheckBtn) {
     status('⚠️ Tombol PRECHECK tidak ditemukan. Langsung CHECK...');
     await sleep(500);
-    return ilabCheckAndNavigate(queEl, status);
+    return moodleCheckAndNavigate(queEl, status);
   }
 
   // Sync Ace editor ke textarea sebelum precheck
@@ -584,7 +584,7 @@ async function ilabPrecheckFlow(queEl, status) {
 
   if (!resultEl) {
     status('⚠️ Hasil PRECHECK tidak muncul. Langsung CHECK...');
-    return ilabCheckAndNavigate(queEl, status);
+    return moodleCheckAndNavigate(queEl, status);
   }
 
   status('⏳ Sinkronisasi layout Moodle (3 detik)...');
@@ -603,7 +603,7 @@ async function ilabPrecheckFlow(queEl, status) {
   if (isPassed) {
     status('✅ PRECHECK berhasil! Menjalankan CHECK...');
     await sleep(800);
-    return ilabCheckAndNavigate(queEl, status);
+    return moodleCheckAndNavigate(queEl, status);
   }
 
   // PRECHECK gagal — cek retry count
@@ -753,7 +753,7 @@ function clearPrecheckResult(queEl) {
 // iLab: CHECK & Navigate (untuk semua tipe soal)
 // ══════════════════════════════════════════════════════════════════════════════
 
-async function ilabCheckAndNavigate(queEl, status) {
+async function moodleCheckAndNavigate(queEl, status) {
   if (!(await isStillBatching())) return;
 
   syncAceToTextarea(queEl);
@@ -929,13 +929,13 @@ async function saveErrorScreenshot(queEl, errorText) {
 function navigateNext(status) {
   const platform = detectPlatform();
 
-  if (platform === 'ilab' || platform === 'vclass') {
-    return ilabNavigateNext(status);
+  if (platform === 'moodle') {
+    return moodleNavigateNext(status);
   }
   return genericNavigateNext(status);
 }
 
-function ilabNavigateNext(status) {
+function moodleNavigateNext(status) {
   const nextSelectors = [
     'input[type="submit"][name="next"]',
     '.mod_quiz-next-nav',

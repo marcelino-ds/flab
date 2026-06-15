@@ -10,8 +10,7 @@
     "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://praktikum.gunadarma.ac.id/*",
-    "https://v-class.gunadarma.ac.id/*",
+    "https://*/*",
     "https://gemini.google.com/*"
   ],
   "background": {
@@ -22,10 +21,8 @@
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://praktikum.gunadarma.ac.id/*",
-        "https://v-class.gunadarma.ac.id/*"
-      ],
+      "matches": ["https://*/*"],
+      "exclude_matches": ["https://gemini.google.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     },

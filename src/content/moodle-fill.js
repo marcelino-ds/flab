@@ -8,7 +8,7 @@ import { getAceEditor, getExistingCode, syncAceToTextarea } from './ace-editor.j
 // identik dengan urutan input di DOM, index_pilihan dari AI adalah sinyal paling
 // andal. Exact-text dipakai sebagai validator (single-select) & jalur utama
 // multi-select. Partial/includes match SENGAJA tidak dipakai (rawan salah pilih).
-export function ilabFillMultichoice(queEl, originalJaw, jaw, idxHint, status) {
+export function moodleFillMultichoice(queEl, originalJaw, jaw, idxHint, status) {
   const norm = s => String(s).toUpperCase()
     .replace(/\s+/g, '')
     .replace(/\\?SQRT|AKAR/g, '√')
@@ -89,7 +89,7 @@ export function ilabFillMultichoice(queEl, originalJaw, jaw, idxHint, status) {
 }
 
 // ── iLab: Short Answer filler ───────────────────────────────────────────────
-export function ilabFillShortAnswer(queEl, jawaban, status) {
+export function moodleFillShortAnswer(queEl, jawaban, status) {
   const inputs = [...queEl.querySelectorAll('.answer input[type="text"], .formulation input[type="text"], input[type="text"][name*="answer"]')];
 
   if (inputs.length === 0) return false;
@@ -114,7 +114,7 @@ export function ilabFillShortAnswer(queEl, jawaban, status) {
 }
 
 // ── iLab: Essay filler ──────────────────────────────────────────────────────
-export function ilabFillEssay(queEl, jawaban, status) {
+export function moodleFillEssay(queEl, jawaban, status) {
   const jText = jawaban.replace(/\\n/g, '\n');
 
   const attoEditor = queEl.querySelector('[contenteditable="true"]');
@@ -140,7 +140,7 @@ export function ilabFillEssay(queEl, jawaban, status) {
 }
 
 // ── iLab: CodeRunner filler (preserves template code) ────────────────────────
-export async function ilabFillCodeRunner(queEl, jawaban, status) {
+export async function moodleFillCodeRunner(queEl, jawaban, status) {
   // Check for GapFill / inline <input> first! Many do not have explict type="text".
   const inlineInputs = [...queEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])')].filter(el => {
     return el.offsetParent !== null && !el.classList.contains('ace_text-input');

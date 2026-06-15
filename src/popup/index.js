@@ -13,17 +13,22 @@ const SESSION_KEYS = [
   'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount',
 ];
 
-const LMS_PLATFORMS = {
-  'praktikum.gunadarma.ac.id': 'ilab',
-  'v-class.gunadarma.ac.id':   'vclass',
-};
-
+// Deteksi Moodle dengan memeriksa penanda DOM di tab aktif (lintas-kampus, bukan
+// per-hostname). Dijalankan via scripting.executeScript di tab yang sedang dibuka.
 async function detectPlatform() {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.url) return { platform: 'unknown', tab };
-    const host = new URL(tab.url).hostname;
-    return { platform: LMS_PLATFORMS[host] || 'unknown', tab };
+    if (!tab?.id || !tab.url || !/^https?:/.test(tab.url)) return { platform: 'unknown', tab };
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const byBody = document.body && /(^|\s)(path-mod-quiz|format-|pagelayout-)/.test(document.body.className);
+        const byDom = !!document.querySelector('.que, #responseform, #page-mod-quiz-attempt, [id^="question-"]');
+        const byPath = location.pathname.includes('/mod/quiz/');
+        return !!(byBody || byDom || byPath);
+      },
+    });
+    return { platform: res?.result ? 'moodle' : 'unknown', tab };
   } catch {
     return { platform: 'unknown', tab: null };
   }
@@ -37,13 +42,13 @@ async function detectPlatform() {
 
   // Platform badge
   badge.className = `platform-badge ${platform}`;
-  const labels = { ilab: 'iLab', vclass: 'vClass', unknown: '—' };
+  const labels = { moodle: 'Moodle', unknown: '—' };
   badge.textContent = labels[platform];
 
   if (platform === 'unknown') {
     btn.disabled = true;
-    btn.textContent = 'Bukan Halaman LMS';
-    setStatus('Menunggu halaman valid');
+    btn.textContent = 'Bukan Halaman Moodle';
+    setStatus('Buka halaman kuis Moodle');
   }
 })();
 

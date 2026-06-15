@@ -1,10 +1,17 @@
-// Deteksi platform & tipe soal Moodle. Fungsi murni baca DOM/location.
+// Deteksi Moodle & tipe soal. Fungsi murni baca DOM/location.
 
+// Deteksi runtime: apakah halaman ini Moodle? (lintas-kampus, bukan per-hostname).
+// Memakai penanda khas Moodle: body class, path /mod/quiz/, atau elemen .que/#responseform.
+export function isMoodle() {
+  const byBody = document.body && /(^|\s)(path-mod-quiz|format-|pagelayout-)/.test(document.body.className);
+  const byDom = !!document.querySelector('.que, #responseform, #page-mod-quiz-attempt, [id^="question-"]');
+  const byPath = location.pathname.includes('/mod/quiz/');
+  return !!(byBody || byDom || byPath);
+}
+
+// Platform selalu 'moodle' bila terdeteksi Moodle, selain itu 'generic'.
 export function detectPlatform() {
-  const host = location.hostname;
-  if (host === 'praktikum.gunadarma.ac.id') return 'ilab';
-  if (host === 'v-class.gunadarma.ac.id') return 'vclass';
-  return 'generic';
+  return isMoodle() ? 'moodle' : 'generic';
 }
 
 export function detectMoodleQuiz() {
