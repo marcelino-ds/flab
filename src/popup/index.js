@@ -53,15 +53,58 @@ async function detectPlatform() {
   }
 })();
 
-// Isi dropdown provider dari registry + pulihkan pilihan terakhir.
+// Custom dropdown: bangun menu dari registry, sinkronkan pilihan ke hidden
+// input #providerSelect (yang dibaca handler START). Native <select> option list
+// tidak bisa di-CSS, jadi kita render trigger + menu sendiri.
 (function populateProviders() {
-  const sel = $('providerSelect');
-  if (!sel) return;
-  sel.innerHTML = Object.values(PROVIDERS)
-    .map(p => `<option value="${p.id}">${p.label}${p.verified ? '' : ' (beta)'}</option>`)
-    .join('');
+  const hidden = $('providerSelect');
+  const dropdown = $('providerDropdown');
+  const trigger = $('providerTrigger');
+  const label = $('providerLabel');
+  const menu = $('providerMenu');
+  if (!hidden || !dropdown || !trigger || !label || !menu) return;
+
+  const providers = Object.values(PROVIDERS);
+  const checkSvg = '<svg class="dd-check" width="13" height="13" viewBox="0 0 13 13" aria-hidden="true"><path d="M2.5 7L5 9.5L10.5 3.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  function setValue(id) {
+    const p = PROVIDERS[id] || PROVIDERS[DEFAULT_PROVIDER];
+    hidden.value = p.id;
+    label.textContent = p.label + (p.verified ? '' : ' (beta)');
+    menu.querySelectorAll('.dd-option').forEach(el => {
+      el.classList.toggle('selected', el.dataset.value === p.id);
+    });
+  }
+
+  menu.innerHTML = providers.map(p =>
+    `<div class="dd-option" data-value="${escapeHtml(p.id)}" role="option" tabindex="0">` +
+    `<span>${escapeHtml(p.label)}${p.verified ? '' : ' (beta)'}</span>${checkSvg}</div>`
+  ).join('');
+
+  const close = () => dropdown.classList.remove('open');
+
+  trigger.addEventListener('click', e => {
+    e.stopPropagation();
+    dropdown.classList.toggle('open');
+  });
+
+  menu.querySelectorAll('.dd-option').forEach(opt => {
+    const choose = () => { setValue(opt.dataset.value); close(); };
+    opt.addEventListener('click', choose);
+    opt.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); }
+    });
+  });
+
+  document.addEventListener('click', e => {
+    if (!dropdown.contains(e.target)) close();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') close();
+  });
+
   chrome.storage.local.get(['lastProvider'], d => {
-    sel.value = (d.lastProvider && PROVIDERS[d.lastProvider]) ? d.lastProvider : DEFAULT_PROVIDER;
+    setValue(d.lastProvider && PROVIDERS[d.lastProvider] ? d.lastProvider : DEFAULT_PROVIDER);
   });
 })();
 
