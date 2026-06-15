@@ -2,6 +2,7 @@
 'use strict';
 
 import { escapeHtml, sleep } from '../shared/util.js';
+import { matchClosingBrace } from './json-extract.js';
 
 const MAX_TICKS = 240;
 const TICK_INTERVAL_MS = 1000;
@@ -411,23 +412,7 @@ function buildGeminiUI() {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-// Cari index '}' yang menutup '{' di posisi `start`, dengan balanced depth dan
-// sadar string JSON + escape. Kembalikan -1 bila tidak ada penutup seimbang.
-function matchClosingBrace(text, start) {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === '\\') { if (inString) escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch === '{') depth++;
-    else if (ch === '}') { depth--; if (depth === 0) return i; }
-  }
-  return -1;
-}
+// matchClosingBrace dipindah ke ./json-extract.js
 
 function dataURLtoBlob(dataUrl) {
   if (!dataUrl?.includes(',')) return new Blob([], { type: 'image/png' });

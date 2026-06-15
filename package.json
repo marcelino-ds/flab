@@ -1,14 +1,17 @@
 {
   "name": "flab",
   "version": "2.0.0",
-  "description": "Auto-solve soal praktikum Gunadarma (iLab) via Gemini.",
+  "description": "Chrome MV3 extension — automated Moodle quiz answering via LLM, with structured DOM extraction and answer filling.",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "happy-dom": "^15.0.0",
+    "vitest": "^2.1.0"
   }
 }

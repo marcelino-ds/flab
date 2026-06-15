@@ -1,5 +1,7 @@
 # flab
 
+[![CI](https://github.com/marcelino-ds/flab/actions/workflows/ci.yml/badge.svg)](https://github.com/marcelino-ds/flab/actions/workflows/ci.yml)
+
 A Chrome **Manifest V3** extension that automates answering Moodle-based online quizzes by routing question content through an LLM (Google Gemini) and filling answers back into the page.
 
 This project is primarily an exercise in **browser-extension architecture, resilient DOM scraping, structured LLM prompting, and a zero-dependency module build pipeline**.
