@@ -88,7 +88,7 @@ export function moodleFillMultichoice(queEl, originalJaw, jaw, idxHint, status) 
   return false;
 }
 
-// ── iLab: Short Answer filler ───────────────────────────────────────────────
+// ── Moodle: Short Answer filler ───────────────────────────────────────────────
 export function moodleFillShortAnswer(queEl, jawaban, status) {
   const inputs = [...queEl.querySelectorAll('.answer input[type="text"], .formulation input[type="text"], input[type="text"][name*="answer"]')];
 
@@ -113,7 +113,7 @@ export function moodleFillShortAnswer(queEl, jawaban, status) {
   return false;
 }
 
-// ── iLab: Essay filler ──────────────────────────────────────────────────────
+// ── Moodle: Essay filler ──────────────────────────────────────────────────────
 export function moodleFillEssay(queEl, jawaban, status) {
   const jText = jawaban.replace(/\\n/g, '\n');
 
@@ -139,7 +139,7 @@ export function moodleFillEssay(queEl, jawaban, status) {
   return false;
 }
 
-// ── iLab: CodeRunner filler (preserves template code) ────────────────────────
+// ── Moodle: CodeRunner filler (preserves template code) ────────────────────────
 export async function moodleFillCodeRunner(queEl, jawaban, status) {
   // Check for GapFill / inline <input> first! Many do not have explict type="text".
   const inlineInputs = [...queEl.querySelectorAll('input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])')].filter(el => {

@@ -17,6 +17,8 @@ import {
   moodleFillMultichoice, moodleFillShortAnswer, moodleFillEssay,
   moodleFillCodeRunner, genericFillInQuestion,
 } from './moodle-fill.js';
+import { recordOutcome, summarize } from './session-stats.js';
+import { parsePrecheckResult, checkIfCorrect } from './grading.js';
 
 // Guard idempotensi: bila content.js sudah ter-inject di dokumen ini, hentikan
 // SEBELUM deklarasi const apa pun agar re-injeksi tidak melempar "already declared".
@@ -310,7 +312,7 @@ async function handleSolve(ai, prompt, isRetry = false) {
   // Build context dari teks soal
   let enrichedPrompt = prompt || '';
   if (isMoodlePlatform) {
-    enrichedPrompt = buildIlabContext(activeQueEl) + '\n' + enrichedPrompt;
+    enrichedPrompt = buildMoodleContext(activeQueEl) + '\n' + enrichedPrompt;
 
     const codeContext = extractCodeRunnerContext(activeQueEl);
     if (codeContext) enrichedPrompt = codeContext + '\n' + enrichedPrompt;
@@ -378,10 +380,10 @@ async function handleSolve(ai, prompt, isRetry = false) {
   }
 }
 
-// ── iLab context builder ───────────────────────────────────────────────────────
+// ── Moodle context builder ───────────────────────────────────────────────────────
 // Hanya penanda platform + tipe (+ opsi bernomor untuk multichoice). Body soal TIDAK
 // diulang di sini karena extractQuestionsText() sudah mengirim versi Markdown lengkap.
-function buildIlabContext(activeQueEl) {
+function buildMoodleContext(activeQueEl) {
   if (!activeQueEl) return '';
 
   const type = detectQuestionType(activeQueEl);
@@ -394,7 +396,7 @@ function buildIlabContext(activeQueEl) {
   let info = `Tipe soal: ${type}`;
   if (options.length > 0) info += ` | ${options.length} opsi`;
 
-  return `[CONTEXT: Platform iLab Gunadarma (Moodle). ${info}]`;
+  return `[CONTEXT: Platform Moodle LMS. ${info}]`;
 }
 
 // ── Image helpers dipindah ke ./question-images.js ──────────────────────────────
@@ -483,7 +485,7 @@ async function executeFillAnswer(json) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// iLab (Moodle) — Fill Answer
+// Moodle — Fill Answer
 // ══════════════════════════════════════════════════════════════════════════════
 async function moodleFillAnswer(json) {
   const ui = document.getElementById('pai-ui');
@@ -554,7 +556,7 @@ async function moodleFillAnswer(json) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// iLab: PRECHECK → Retry → CHECK → Navigate (untuk CodeRunner)
+// Moodle: PRECHECK → Retry → CHECK → Navigate (untuk CodeRunner)
 // ══════════════════════════════════════════════════════════════════════════════
 
 
@@ -667,78 +669,7 @@ async function waitForPrecheckResult(queEl, timeout = TIMEOUTS.PRECHECK_RESULT) 
   return null;
 }
 
-// Parse PRECHECK result — return true if all tests passed
-function parsePrecheckResult(text, el) {
-  const lower = text.toLowerCase();
-
-  // Explicit pass indicators
-  // Use word-boundary check for 'passed' to avoid matching "Test 1 passed, Test 2 failed"
-  const passedWholeWord = /\bpassed\b/i.test(text);
-  const notPassedPhrase = /\bnot passed\b/i.test(text);
-  if (lower.includes('passed all') || lower.includes('all correct') ||
-    lower.includes('semua benar') || lower.includes('mark: 1') ||
-    (passedWholeWord && !notPassedPhrase)) {
-    // Double check: pastikan tidak ada "failed" juga
-    if (!lower.includes('fail') && !lower.includes('error') && !lower.includes('wrong')) {
-      return true;
-    }
-  }
-
-  // Cek tabel Coderunner: prioritaskan centang hijau (Pass/✓/.correct) terlebih dahulu
-  const rows = el.querySelectorAll('tr');
-  if (rows.length > 1) {
-    // Strategy 1: Centang Hijau / class correct
-    const allPassed = [...rows].slice(1).every(row => {
-      // Jika seluruh row di-flag correct
-      if (row.classList.contains('correct') || row.classList.contains('pass')) return true;
-      const cells = row.querySelectorAll('td');
-      // Cari apakah ada cell yang memiliki centang hijau atau class correct
-      return [...cells].some(c =>
-        c.classList.contains('correct') ||
-        c.classList.contains('pass') ||
-        c.innerText?.includes('✓') ||
-        c.innerText?.includes('Pass')
-      );
-    });
-    // Jika semua row memiliki tanda lulus, maka benar!
-    if (allPassed) return true;
-
-    // Strategy 2: Samakan string Expected dan Got (Lebih mentolerir spasi)
-    let expectedIdx = -1;
-    let gotIdx = -1;
-
-    // Cari index kolom
-    const headers = rows[0].querySelectorAll('th');
-    headers.forEach((th, i) => {
-      const hd = (th.innerText || th.textContent || '').toLowerCase().trim();
-      if (hd === 'expected') expectedIdx = i;
-      if (hd === 'got') gotIdx = i;
-    });
-
-    if (expectedIdx !== -1 && gotIdx !== -1) {
-      // Jika ada kolom Expected dan Got, membandingkan isinya mengabaikan whitespace ganda
-      const allMatched = [...rows].slice(1).every(row => {
-        const cells = row.querySelectorAll('td');
-        if (!cells[expectedIdx] || !cells[gotIdx]) return false; // konservatif: baris tak lengkap jangan diklaim lulus
-        const expected = (cells[expectedIdx].innerText || cells[expectedIdx].textContent || '').trim().replace(/\s+/g, ' ');
-        const got = (cells[gotIdx].innerText || cells[gotIdx].textContent || '').trim().replace(/\s+/g, ' ');
-        return expected !== '' && expected === got;
-      });
-      if (allMatched) return true;
-      // Jika hijau gagal, dan text match gagal, maka ini pasti salah.
-      return false;
-    }
-  }
-
-  // Explicit fail indicators
-  if (lower.includes('fail') || lower.includes('error') || lower.includes('wrong') ||
-    lower.includes('salah') || lower.includes('expected') || lower.includes('got')) {
-    return false;
-  }
-
-  // Unknown — assume fail to trigger retry
-  return false;
-}
+// parsePrecheckResult dipindah ke ./grading.js
 
 // Clear precheck result from DOM so it doesn't interfere with next precheck
 // PENTING: Tidak hapus [id*="feedback"] atau .outcome global - terlalu agresif.
@@ -750,7 +681,7 @@ function clearPrecheckResult(queEl) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// iLab: CHECK & Navigate (untuk semua tipe soal)
+// Moodle: CHECK & Navigate (untuk semua tipe soal)
 // ══════════════════════════════════════════════════════════════════════════════
 
 async function moodleCheckAndNavigate(queEl, status) {
@@ -805,12 +736,14 @@ async function moodleCheckAndNavigate(queEl, status) {
       // Cek hasil CHECK
       const isCorrect = checkIfCorrect(freshQueEl);
       if (isCorrect === true) {
+        await bumpSessionStats('correct');
         status('✅ Jawaban BENAR!');
       } else if (isCorrect === false) {
         const d = await storageGet(['checkRetryCount']);
         const retryCount = Number(d.checkRetryCount ?? 0);
 
         if (retryCount >= MAX_PRECHECK_RETRIES) {
+          await bumpSessionStats('failed');
           status(`❌ CHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot.`);
           const questionText = freshQueEl.querySelector('.qtext')?.innerText?.trim() || '';
 
@@ -862,36 +795,7 @@ async function moodleCheckAndNavigate(queEl, status) {
   }
 }
 
-// Check if answer is correct after CHECK (look at Moodle feedback)
-function checkIfCorrect(queEl) {
-  if (!queEl) return null;
-
-  const cl = queEl.classList;
-  if (cl.contains('correct')) return true;
-  if (cl.contains('incorrect')) return false;
-  if (cl.contains('partiallycorrect')) return false;
-
-  // Check feedback elements
-  const feedback = queEl.querySelector('.outcome, .feedback, .state');
-  if (feedback) {
-    const text = feedback.innerText?.toLowerCase() || '';
-    if (text.includes('correct') || text.includes('benar')) return true;
-    if (text.includes('incorrect') || text.includes('salah')) return false;
-  }
-
-  // Check grade
-  const grade = queEl.querySelector('.grade, .mark');
-  if (grade) {
-    const text = grade.innerText || '';
-    const match = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
-    if (match) {
-      const [, got, total] = match;
-      return parseFloat(got) >= parseFloat(total);
-    }
-  }
-
-  return null; // unknown
-}
+// checkIfCorrect dipindah ke ./grading.js
 
 // ── Save error screenshot ──────────────────────────────────────────────────────
 async function saveErrorScreenshot(queEl, errorText) {
@@ -986,7 +890,10 @@ function moodleNavigateNext(status) {
     return;
   }
 
-  status('🏁 Semua soal selesai! Review jawabanmu.');
+  storageGet(['sessionStats']).then(d => {
+    const ringkasan = summarize(d.sessionStats);
+    status(`🏁 Semua soal selesai! ${ringkasan}. Review jawabanmu.`);
+  });
   chrome.storage.local.set({ isBatching: false });
   setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
 }
@@ -1103,6 +1010,14 @@ async function isStillBatching() {
   if (window.__flabAborted) return false;
   const d = await storageGet(['isBatching']);
   return !!d.isBatching;
+}
+
+// Tambah satu outcome ke sessionStats di storage (read-modify-write; aman untuk single-tab).
+async function bumpSessionStats(outcome) {
+  const d = await storageGet(['sessionStats']);
+  const next = recordOutcome(d.sessionStats, outcome);
+  await chrome.storage.local.set({ sessionStats: next });
+  return next;
 }
 
 // ── waitForBody / scrollToResultElement / waitFor dipindah ke ./dom-utils.js ────

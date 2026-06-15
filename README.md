@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/marcelino-ds/flab/actions/workflows/ci.yml/badge.svg)](https://github.com/marcelino-ds/flab/actions/workflows/ci.yml)
 
-A Chrome **Manifest V3** extension that automates answering Moodle-based online quizzes by routing question content through an LLM (Google Gemini) and filling answers back into the page.
+A Chrome **Manifest V3** extension that automates answering Moodle-based online quizzes by routing question content through an LLM (Gemini, ChatGPT, or Claude — selectable) and filling answers back into the page. Works on any Moodle instance via runtime detection, not a hardcoded host list.
 
 This project is primarily an exercise in **browser-extension architecture, resilient DOM scraping, structured LLM prompting, and a zero-dependency module build pipeline**.
 
@@ -14,7 +14,7 @@ This project is primarily an exercise in **browser-extension architecture, resil
 
 1. Detects a Moodle quiz page and locates the active, unanswered question.
 2. Extracts the question — preserving structure (tables, code blocks, LaTeX) by converting the relevant DOM subtree to Markdown.
-3. Sends the question to Gemini in a separate tab with a strict prompt contract, and parses a single JSON answer block back out of the streamed response.
+3. Sends the question to the selected LLM in a separate tab with a strict prompt contract, and parses a single JSON answer block back out of the streamed response.
 4. Fills the answer into the page per question type (multiple-choice, short answer, essay, CodeRunner code), then runs the quiz's check/precheck flow and navigates onward.
 
 ## Architecture
@@ -32,15 +32,19 @@ The content script is split into focused modules:
 
 ```
 src/
-├── shared/util.js          escapeHtml, sleep (shared across surfaces)
+├── shared/
+│   ├── util.js              escapeHtml, sleep (shared across surfaces)
+│   └── providers.js         LLM provider registry (Gemini / ChatGPT / Claude)
 └── content/
-    ├── platform.js          platform & question-type detection
+    ├── platform.js          Moodle & question-type detection (runtime, host-agnostic)
     ├── html-to-markdown.js  structure-preserving extraction (tables, code, MathJax → LaTeX)
     ├── ace-editor.js         CodeRunner / Ace editor integration
     ├── dom-utils.js          pure DOM helpers
     ├── question-images.js    image detection + composite-canvas stitching
     ├── moodle-options.js     single-source-of-truth option reading (index-aligned)
     ├── moodle-fill.js        per-type answer fillers
+    ├── grading.js            precheck/CHECK result parsing (pass/fail)
+    ├── session-stats.js      session summary aggregation
     └── index.js              flow engine + router + status UI
 ```
 
@@ -51,6 +55,7 @@ src/
 - **Verified fills.** CodeRunner fills read the editor back and compare before claiming success, instead of optimistically assuming a synthetic paste worked.
 - **Idempotent injection.** The content script is guarded so repeated injection never redeclares globals.
 - **Circuit breaker.** A hard per-session cap on solve dispatches prevents runaway retry loops.
+- **Pluggable LLM backend.** All provider-specific config (URL, DOM selectors, host match) lives in one registry; the injector logic is generic and resolves the provider by host, so adding a backend is a config entry rather than a code change.
 - **Least privilege + MV3 CSP friendly.** No clipboard permissions, no remote fonts, sender-validated message handlers.
 
 ## Build & load
@@ -69,9 +74,10 @@ Then in `chrome://extensions`: enable Developer Mode → **Load unpacked** → s
 npm test           # vitest run (happy-dom)
 ```
 
-**82 unit tests** across 9 pure/leaf modules: JSON extraction, HTML→Markdown,
-question-type routing, option alignment, answer fillers (incl. XSS escaping),
-DOM helpers, and the provider registry. CI runs tests + build on every push.
+**119 unit tests** across pure/leaf modules: JSON extraction, HTML→Markdown,
+question-type routing, Moodle detection, option alignment, answer fillers (incl.
+XSS escaping), DOM helpers, grading/precheck parsing, session stats, and the
+provider registry. CI runs tests + build on every push.
 
 DOM-heavy modules that depend on a live Ace editor, canvas rendering, or real
 Moodle markup (`ace-editor`, `question-images`, the flow engine) are intentionally

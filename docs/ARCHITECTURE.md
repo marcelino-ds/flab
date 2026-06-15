@@ -103,9 +103,9 @@ adding one registry entry, a manifest host-permission + content-script line, and
 **verifying the selectors against the live site** — not editing flow logic.
 
 > The selectors for a new provider can only be confirmed by testing against the
-> real site; they are deliberately *not* guessed and committed blind. Gemini is the
-> one verified implementation; the registry is the seam that makes others a
-> config-and-test task rather than a rewrite.
+> real site; they are deliberately *not* guessed and committed blind. Gemini,
+> ChatGPT, and Claude are verified implementations; the registry is the seam that
+> makes adding further providers a config-and-test task rather than a rewrite.
 
 ## What is *not* modularized, and why
 

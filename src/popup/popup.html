@@ -57,14 +57,9 @@
       text-transform: uppercase;
     }
 
-    .platform-badge.ilab {
+    .platform-badge.moodle {
       background: rgba(50, 215, 75, 0.15);
       color: #32D74B;
-    }
-
-    .platform-badge.vclass {
-      background: rgba(10, 132, 255, 0.15);
-      color: #0A84FF;
     }
 
     .platform-badge.unknown {
@@ -94,6 +89,30 @@
       font-weight: 500;
       color: #EBEBF5;
       margin-bottom: 8px;
+    }
+
+    select#providerSelect {
+      width: 100%;
+      background: rgba(118, 118, 128, 0.12);
+      border: 1px solid transparent;
+      border-radius: 12px;
+      color: #fff;
+      font-family: inherit;
+      font-size: 13px;
+      padding: 11px 12px;
+      outline: none;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    select#providerSelect:focus {
+      background: rgba(118, 118, 128, 0.24);
+      border-color: rgba(255, 255, 255, 0.1);
+    }
+
+    select#providerSelect option {
+      background: #1C1C1E;
+      color: #fff;
     }
 
     textarea {
@@ -270,6 +289,11 @@
     <div class="disclaimer">
       <strong>Catatan:</strong> Tools ini hanya untuk otomasi. Benar atau tidaknya jawaban sepenuhnya tergantung dari
       respons AI.
+    </div>
+
+    <div>
+      <div class="sec-label">Model AI</div>
+      <select id="providerSelect"></select>
     </div>
 
     <div>

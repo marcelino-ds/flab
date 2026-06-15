@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PROVIDERS, DEFAULT_PROVIDER, getProvider } from '../src/shared/providers.js';
+import { PROVIDERS, DEFAULT_PROVIDER, getProvider, getProviderByHost } from '../src/shared/providers.js';
 
 describe('provider registry', () => {
   it('gemini terdaftar dengan config lengkap', () => {
@@ -16,7 +16,12 @@ describe('provider registry', () => {
   });
 
   it('getProvider fallback ke default untuk id tak dikenal', () => {
-    expect(getProvider('chatgpt')).toBe(PROVIDERS[DEFAULT_PROVIDER]);
+    expect(getProvider('nonexistent-llm')).toBe(PROVIDERS[DEFAULT_PROVIDER]);
+  });
+
+  it('chatgpt & claude terdaftar sebagai provider', () => {
+    expect(PROVIDERS.chatgpt?.id).toBe('chatgpt');
+    expect(PROVIDERS.claude?.id).toBe('claude');
   });
 
   it('getProvider fallback untuk undefined/null', () => {
@@ -26,5 +31,20 @@ describe('provider registry', () => {
 
   it('DEFAULT_PROVIDER menunjuk entry yang valid', () => {
     expect(PROVIDERS[DEFAULT_PROVIDER]).toBeDefined();
+  });
+});
+
+describe('getProviderByHost', () => {
+  it('cocokkan gemini via host', () => {
+    expect(getProviderByHost('gemini.google.com')?.id).toBe('gemini');
+  });
+  it('cocokkan chatgpt via host', () => {
+    expect(getProviderByHost('chatgpt.com')?.id).toBe('chatgpt');
+  });
+  it('cocokkan claude via host', () => {
+    expect(getProviderByHost('claude.ai')?.id).toBe('claude');
+  });
+  it('host non-provider → null', () => {
+    expect(getProviderByHost('example.com')).toBeNull();
   });
 });

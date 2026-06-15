@@ -8,7 +8,7 @@ import { getProvider } from '../shared/providers.js';
 const STALE_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount'
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'sessionStats'
 ];
 
 function clearStaleSession(reason) {
@@ -38,7 +38,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (!tab.url || !isInjectableUrl(tab.url)) return;
 
-  chrome.storage.local.get(['isBatching', 'batchTabId', 'activeMode', 'batchPrompt'], d => {
+  chrome.storage.local.get(['isBatching', 'batchTabId', 'activeMode', 'batchPrompt', 'ai'], d => {
     if (!d.isBatching || d.batchTabId !== tabId) return;
 
     chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }, () => {
@@ -48,7 +48,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       }
       chrome.tabs.sendMessage(tabId, {
         action: 'START',
-        ai: 'gemini',
+        ai: d.ai || 'gemini',
         mode: d.activeMode || 'solve',
         prompt: d.batchPrompt || '',
       }, () => {

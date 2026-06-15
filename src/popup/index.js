@@ -2,6 +2,7 @@
 'use strict';
 
 import { escapeHtml } from '../shared/util.js';
+import { PROVIDERS, DEFAULT_PROVIDER } from '../shared/providers.js';
 
 const $ = id => document.getElementById(id);
 
@@ -10,7 +11,7 @@ const $ = id => document.getElementById(id);
 const SESSION_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'sessionStats',
 ];
 
 // Deteksi Moodle dengan memeriksa penanda DOM di tab aktif (lintas-kampus, bukan
@@ -52,6 +53,18 @@ async function detectPlatform() {
   }
 })();
 
+// Isi dropdown provider dari registry + pulihkan pilihan terakhir.
+(function populateProviders() {
+  const sel = $('providerSelect');
+  if (!sel) return;
+  sel.innerHTML = Object.values(PROVIDERS)
+    .map(p => `<option value="${p.id}">${p.label}${p.verified ? '' : ' (beta)'}</option>`)
+    .join('');
+  chrome.storage.local.get(['lastProvider'], d => {
+    sel.value = (d.lastProvider && PROVIDERS[d.lastProvider]) ? d.lastProvider : DEFAULT_PROVIDER;
+  });
+})();
+
 // Load saved prompt
 chrome.storage.local.get(['prompt'], d => {
   if (d.prompt) $('prompt').value = d.prompt;
@@ -60,7 +73,8 @@ chrome.storage.local.get(['prompt'], d => {
 // ── Send / Start ──────────────────────────────────────────────────────────────
 $('sendBtn').addEventListener('click', async () => {
   const prompt = $('prompt').value.trim();
-  chrome.storage.local.set({ prompt });
+  const ai = $('providerSelect')?.value || 'gemini';
+  chrome.storage.local.set({ prompt, lastProvider: ai });
 
   $('sendBtn').disabled = true;
   setStatus('Menyiapkan...');
@@ -81,12 +95,12 @@ $('sendBtn').addEventListener('click', async () => {
       activeMode: 'solve',
       batchTabId: tab.id,
       batchPrompt: prompt,
-      ai: 'gemini',
+      ai,
     });
 
     chrome.tabs.sendMessage(tab.id, {
       action : 'START',
-      ai     : 'gemini',
+      ai,
       mode   : 'solve',
       prompt,
     }, () => {

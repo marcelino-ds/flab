@@ -3,7 +3,7 @@
 
 import { escapeHtml, sleep } from '../shared/util.js';
 import { matchClosingBrace } from './json-extract.js';
-import { getProvider } from '../shared/providers.js';
+import { getProviderByHost } from '../shared/providers.js';
 
 const MAX_TICKS = 240;
 const TICK_INTERVAL_MS = 1000;
@@ -22,9 +22,11 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
   const myTabId = await getMyTabId();
 
   if (!payload)                              { console.log('[FLAB] No payload – skip.'); return; }
-  if (payload.ai !== 'gemini')               { return; }
 
-  const provider = getProvider(payload.ai);
+  // Provider di-identify dari host tab ini; hanya lanjut bila cocok dengan pilihan user.
+  const provider = getProviderByHost(location.hostname);
+  if (!provider)                             { console.log('[FLAB] Host bukan provider terdaftar – skip.'); return; }
+  if (payload.ai && payload.ai !== provider.id) { console.log('[FLAB] Provider mismatch – skip.'); return; }
 
   // Race fix (H1): background menulis pendingTabId di callback SETELAH tab dibuat.
   // Bila tab Gemini ready lebih dulu, pendingTabId bisa belum ada → retry baca singkat
