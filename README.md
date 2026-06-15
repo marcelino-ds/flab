@@ -63,6 +63,19 @@ npm run build      # bundles src/ → dist/
 
 Then in `chrome://extensions`: enable Developer Mode → **Load unpacked** → select the **`dist/`** folder (not the repo root).
 
+## Test
+
+```bash
+npm test           # vitest run (happy-dom)
+```
+
+Pure leaf modules (`html-to-markdown`, `json-extract`) are unit-tested; the flow engine is verified in a real browser. CI runs tests + build on every push.
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — design decisions and reasoning
+- [CONTRIBUTING.md](CONTRIBUTING.md) — setup, build, test, conventions
+
 ## Tech
 
-Vanilla JS (ES modules) · esbuild · Chrome Extensions Manifest V3 · no runtime dependencies.
+Vanilla JS (ES modules) · esbuild · vitest · Chrome Extensions Manifest V3 · no runtime dependencies.
