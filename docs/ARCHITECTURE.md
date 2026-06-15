@@ -93,6 +93,20 @@ fix, but Chrome content scripts don't support ES modules directly. esbuild bundl
 each surface to an IIFE (`--format=iife`), which simultaneously enables true
 modularity, unit-testing of pure modules, and the idempotency guarantee from #6.
 
+### 9. Provider registry (pluggable LLM)
+
+All provider-specific knowledge — chat URL, editor/send/bubble selectors — lives in
+`src/shared/providers.js`, not scattered across the injector and background. The
+injector logic is generic: it resolves a provider from `payload.ai` and drives
+whatever selectors that entry defines. Adding ChatGPT or Claude is a matter of
+adding one registry entry, a manifest host-permission + content-script line, and
+**verifying the selectors against the live site** — not editing flow logic.
+
+> The selectors for a new provider can only be confirmed by testing against the
+> real site; they are deliberately *not* guessed and committed blind. Gemini is the
+> one verified implementation; the registry is the seam that makes others a
+> config-and-test task rather than a rewrite.
+
 ## What is *not* modularized, and why
 
 The flow engine (`handleSolve`, precheck/check/navigate, router, status UI) stays

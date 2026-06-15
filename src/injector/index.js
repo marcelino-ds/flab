@@ -3,6 +3,7 @@
 
 import { escapeHtml, sleep } from '../shared/util.js';
 import { matchClosingBrace } from './json-extract.js';
+import { getProvider } from '../shared/providers.js';
 
 const MAX_TICKS = 240;
 const TICK_INTERVAL_MS = 1000;
@@ -22,6 +23,8 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
 
   if (!payload)                              { console.log('[FLAB] No payload – skip.'); return; }
   if (payload.ai !== 'gemini')               { return; }
+
+  const provider = getProvider(payload.ai);
 
   // Race fix (H1): background menulis pendingTabId di callback SETELAH tab dibuat.
   // Bila tab Gemini ready lebih dulu, pendingTabId bisa belum ada → retry baca singkat
@@ -54,14 +57,14 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
     setTimeout(() => ui.root.remove(), 3000);
   });
 
-  // ── Wait for Gemini editor ─────────────────────────────────────────────────
-  const inputEl = await waitFor(() =>
-    document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
-    document.querySelector('.ql-editor[contenteditable="true"]') ||
-    document.querySelector('div[aria-label*="message" i][contenteditable="true"]') ||
-    document.querySelector('rich-textarea div[contenteditable="true"]') ||
-    document.querySelector('div[contenteditable="true"]')
-  , EDITOR_WAIT_MS);
+  // ── Wait for provider editor ───────────────────────────────────────────────
+  const inputEl = await waitFor(() => {
+    for (const sel of provider.editorSelectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }, EDITOR_WAIT_MS);
 
   if (!inputEl) {
     setGStatus('[Sistem] Gagal mengikat elemen editor teks Gemini UI.', 100, '#ff453a');
@@ -98,9 +101,9 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
   await sleep(INITIAL_DELAY_MS);
 
   // Ambil jumlah bubble SEBELUM klik send agar tahu mana bubble respons yang baru
-  const initialBubbleCount = document.querySelectorAll(BUBBLE_SELECTOR).length;
+  const initialBubbleCount = document.querySelectorAll(provider.bubbleSelector).length;
 
-  const sent = clickSend();
+  const sent = clickSend(provider);
   if (!sent) {
     setGStatus('[Error] Kegagalan menemukan elemen pemicu pengiriman.', 100, '#ff453a');
     setTimeout(() => ui.root.remove(), 5000);
@@ -110,7 +113,7 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
   setGStatus('[Agen] Menggantung status, menunggu perakitan struktur JSON dan resolusi AI...', 90);
   const needsJsonResponse = payload.type === 'solve_image' || payload.type === 'solve_text';
   if (needsJsonResponse) {
-    await observeAndExtractJson(setGStatus, () => aborted, initialBubbleCount);
+    await observeAndExtractJson(setGStatus, () => aborted, initialBubbleCount, provider.bubbleSelector);
   } else {
     setTimeout(() => ui.root.remove(), 4000);
   }
@@ -137,16 +140,16 @@ DILARANG menulis analisis atau penjelasan teks apapun di luar blok JSON.`;
 }
 
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
-async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1) {
+async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1, bubbleSelector = BUBBLE_SELECTOR) {
   let ticks = 0;
 
-  const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(BUBBLE_SELECTOR).length;
+  const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(bubbleSelector).length;
 
   return new Promise(resolve => {
     const timer = setInterval(() => {
       if (isAborted?.()) { clearInterval(timer); resolve(); return; }
 
-      const bubbles = document.querySelectorAll(BUBBLE_SELECTOR);
+      const bubbles = document.querySelectorAll(bubbleSelector);
       if (bubbles.length <= existingBubbleCount) { tick(); return; }
       const node  = bubbles[bubbles.length - 1];
       const text  = node.innerText || node.textContent || '';
@@ -348,17 +351,8 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
 }
 
 // ── Click send button ──────────────────────────────────────────────────────────
-function clickSend() {
-  const selectors = [
-    'button[aria-label="Send message"]',
-    'button[aria-label="Kirim pesan"]',
-    'button[aria-label*="Send" i]',
-    'button[aria-label*="Kirim" i]',
-    'button[data-mat-icon-name="send"]',
-    'button[jsname][data-ogsr-up]',
-    'button.send-button',
-    '[data-test-id="send-button"]',
-  ];
+function clickSend(provider) {
+  const selectors = provider?.sendSelectors || [];
 
   for (const sel of selectors) {
     for (const btn of document.querySelectorAll(sel)) {
@@ -370,10 +364,11 @@ function clickSend() {
   }
 
   // Fallback: Enter key on editor
-  const editor =
-    document.querySelector('rich-textarea .ql-editor') ||
-    document.querySelector('.ql-editor[contenteditable="true"]') ||
-    document.querySelector('div[contenteditable="true"]');
+  let editor = null;
+  for (const sel of (provider?.editorSelectors || [])) {
+    editor = document.querySelector(sel);
+    if (editor) break;
+  }
   if (editor) {
     editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, bubbles: true }));
     return true;

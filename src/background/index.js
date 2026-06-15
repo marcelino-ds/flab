@@ -1,6 +1,8 @@
 // ── Background service worker ─────────────────────────────────────────────────
 'use strict';
 
+import { getProvider } from '../shared/providers.js';
+
 // Daftar KANONIK semua key state sesi (HARUS identik dengan SESSION_KEYS di popup.js).
 // TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
 const STALE_KEYS = [
@@ -21,7 +23,7 @@ chrome.runtime.onStartup.addListener(() => clearStaleSession('startup'));
 // Cleanup saat extension di-install/update
 chrome.runtime.onInstalled.addListener(() => clearStaleSession('install/update'));
 
-const GEMINI_URL = 'https://gemini.google.com/app';
+// URL provider LLM di-resolve dari registry berdasarkan payload.ai (default: gemini).
 
 // Allowed LMS hosts
 const LMS_HOSTS = [
@@ -136,8 +138,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.action === 'OPEN_AI') {
     chrome.storage.local.get(['pendingTabId'], d => {
       const openNewTab = () => {
+        const providerUrl = getProvider(msg.payload?.ai).url;
         chrome.storage.local.set({ flabPayload: msg.payload }, () => {
-          chrome.tabs.create({ url: GEMINI_URL }, newTab => {
+          chrome.tabs.create({ url: providerUrl }, newTab => {
             chrome.storage.local.set({ pendingTabId: newTab.id });
           });
         });
