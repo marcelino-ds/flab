@@ -69,7 +69,14 @@ Then in `chrome://extensions`: enable Developer Mode → **Load unpacked** → s
 npm test           # vitest run (happy-dom)
 ```
 
-Pure leaf modules (`html-to-markdown`, `json-extract`) are unit-tested; the flow engine is verified in a real browser. CI runs tests + build on every push.
+**82 unit tests** across 9 pure/leaf modules: JSON extraction, HTML→Markdown,
+question-type routing, option alignment, answer fillers (incl. XSS escaping),
+DOM helpers, and the provider registry. CI runs tests + build on every push.
+
+DOM-heavy modules that depend on a live Ace editor, canvas rendering, or real
+Moodle markup (`ace-editor`, `question-images`, the flow engine) are intentionally
+**not** unit-tested — happy-dom can't reproduce them faithfully, so they're verified
+in a real browser instead.
 
 ## Documentation
 
