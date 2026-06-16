@@ -74,6 +74,8 @@ async function detectPlatform() {
     menu.querySelectorAll('.dd-option').forEach(el => {
       el.classList.toggle('selected', el.dataset.value === p.id);
     });
+    // Beri tahu seksi Mode API agar key input & link mengikuti provider terpilih.
+    window.__flabOnProviderChange?.(p.id);
   }
 
   menu.innerHTML = providers.map(p =>
@@ -105,6 +107,49 @@ async function detectPlatform() {
 
   chrome.storage.local.get(['lastProvider'], d => {
     setValue(d.lastProvider && PROVIDERS[d.lastProvider] ? d.lastProvider : DEFAULT_PROVIDER);
+  });
+})();
+
+// Mode API: toggle + key per-provider. Key disimpan terpisah per provider
+// (apiKey_gemini/_chatgpt/_claude) agar ganti provider tak menimpa key lain.
+(function setupApiMode() {
+  const toggle = $('apiToggle');
+  const wrap = $('apiKeyWrap');
+  const keyInput = $('apiKey');
+  const link = $('apiKeyLink');
+  if (!toggle || !wrap || !keyInput || !link) return;
+
+  let currentProvider = DEFAULT_PROVIDER;
+
+  const syncVisibility = () => { wrap.style.display = toggle.checked ? 'flex' : 'none'; };
+
+  // Dipanggil dropdown saat provider berganti — muat key & arahkan link provider itu.
+  window.__flabOnProviderChange = id => {
+    currentProvider = id;
+    const p = PROVIDERS[id] || PROVIDERS[DEFAULT_PROVIDER];
+    link.href = p.api?.keyUrl || '#';
+    link.style.display = p.api ? 'inline' : 'none';
+    chrome.storage.local.get([`apiKey_${id}`], d => {
+      keyInput.value = d[`apiKey_${id}`] || '';
+    });
+  };
+
+  toggle.addEventListener('change', () => {
+    syncVisibility();
+    chrome.storage.local.set({ apiMode: toggle.checked });
+  });
+
+  // Simpan key saat user selesai mengetik (per provider terpilih).
+  keyInput.addEventListener('change', () => {
+    chrome.storage.local.set({ [`apiKey_${currentProvider}`]: keyInput.value.trim() });
+  });
+  keyInput.addEventListener('blur', () => {
+    chrome.storage.local.set({ [`apiKey_${currentProvider}`]: keyInput.value.trim() });
+  });
+
+  chrome.storage.local.get(['apiMode'], d => {
+    toggle.checked = !!d.apiMode;
+    syncVisibility();
   });
 })();
 

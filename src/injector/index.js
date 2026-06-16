@@ -4,6 +4,7 @@
 import { escapeHtml, sleep } from '../shared/util.js';
 import { matchClosingBrace } from './json-extract.js';
 import { getProviderByHost } from '../shared/providers.js';
+import { buildAutoSolveRules } from '../shared/solve-contract.js';
 
 const MAX_TICKS = 240;
 const TICK_INTERVAL_MS = 1000;
@@ -16,44 +17,32 @@ const IMAGE_LOAD_DELAY_MS = 2000;
 const PASTE_DELAY_MS = 3000;
 const PROMPT_WAIT_MS = 5000;
 const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-author-role="model"], message-content';
-(async () => {
-  let session = await chrome.storage.local.get(['flabPayload', 'pendingTabId']);
-  const payload = session.flabPayload;
-  const myTabId = await getMyTabId();
+// Token abort per-payload. Tab persisten dipakai ulang lintas soal, jadi STOP dari
+// soal lama tidak boleh membatalkan soal baru — tiap processPayload pegang token
+// sendiri, dan __activeAbort selalu menunjuk token yang sedang berjalan.
+let __activeAbort = { v: false };
 
-  if (!payload)                              { console.log('[FLAB] No payload – skip.'); return; }
+// Proses SATU payload di tab provider: bangun UI, tunggu editor, inject, kirim,
+// amati respons. Dipanggil saat tab pertama kali dibuka (payload dari storage) dan
+// tiap kali background mengirim NEW_PAYLOAD ke tab yang sama (soal berikutnya).
+async function processPayload(payload, provider) {
+  const myAbort = { v: false };
+  __activeAbort = myAbort;
 
-  // Provider di-identify dari host tab ini; hanya lanjut bila cocok dengan pilihan user.
-  const provider = getProviderByHost(location.hostname);
-  if (!provider)                             { console.log('[FLAB] Host bukan provider terdaftar – skip.'); return; }
-  if (payload.ai && payload.ai !== provider.id) { console.log('[FLAB] Provider mismatch – skip.'); return; }
+  // Reuse tab → bersihkan overlay sisa soal sebelumnya sebelum bikin yang baru.
+  document.getElementById('__flab-gem-ui')?.remove();
 
-  // Race fix (H1): background menulis pendingTabId di callback SETELAH tab dibuat.
-  // Bila tab Gemini ready lebih dulu, pendingTabId bisa belum ada → retry baca singkat
-  // sebelum menyatakan mismatch, agar payload tidak menggantung.
-  for (let i = 0; i < 10 && session.pendingTabId == null; i++) {
-    await sleep(150);
-    session = await chrome.storage.local.get(['flabPayload', 'pendingTabId']);
-  }
-  if (session.pendingTabId !== myTabId)      { console.log('[FLAB] Tab ID mismatch – skip.'); return; }
-
-  await chrome.storage.local.remove(['flabPayload', 'pendingTabId']);
-  console.log('[FLAB] Payload received, type:', payload.type);
-
-  // ── Status-UI overlay ──────────────────────────────────────────────────────
   const ui = buildGeminiUI();
-  let aborted = false;
-
-  // setGStatus definisikan lebih awal agar siap digunakan di stop handler
+  const isAborted = () => myAbort.v;
   const setGStatus = (msg, pct = null, barColor = null) => {
-    if (aborted) return;
+    if (myAbort.v) return;
     ui.status.innerHTML = msg;
     if (pct !== null) ui.bar.style.width = pct + '%';
     if (barColor) ui.bar.style.background = barColor;
   };
 
   ui.stopBtn.addEventListener('click', () => {
-    aborted = true;
+    myAbort.v = true;
     setGStatus('[Sistem] Dibatalkan paksa. Sinyal sinkron dikirim ke LMS.', 100, '#ff453a');
     chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan LMS di tab sebelah
     setTimeout(() => ui.root.remove(), 3000);
@@ -73,7 +62,7 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
-  if (aborted) return;
+  if (myAbort.v) return;
   setGStatus('[DOM] Editor input dikunci. Memulai injeksi...', 10);
 
   // ── Dispatch payload type ──────────────────────────────────────────────────
@@ -89,16 +78,16 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
     await injectText(inputEl, textPrompt);
   } else if (payload.type === 'batch_images') {
     setGStatus(`[Aliran] Menyiapkan unggahan massal untuk ${payload.dataUrls.length} blob grafis...`, 20);
-    await injectMultipleImages(inputEl, payload.dataUrls, payload.prompt, setGStatus, () => aborted);
+    await injectMultipleImages(inputEl, payload.dataUrls, payload.prompt, setGStatus, isAborted);
   } else if (payload.type === 'solve_image') {
     setGStatus('[Operasi] Mode Ekstraksi Gambar & Parsing JSON otomatis...', 30);
-    await injectImage(inputEl, payload.dataUrl, (payload.prompt || '') + autoSolveRules, setGStatus, () => aborted);
+    await injectImage(inputEl, payload.dataUrl, (payload.prompt || '') + autoSolveRules, setGStatus, isAborted);
   } else {
     setGStatus('[Operasi] Menginisiasi transmisi blob gambar tunggal...', 30);
-    await injectImage(inputEl, payload.dataUrl, payload.prompt || '', setGStatus, () => aborted);
+    await injectImage(inputEl, payload.dataUrl, payload.prompt || '', setGStatus, isAborted);
   }
 
-  if (aborted) return;
+  if (myAbort.v) return;
   setGStatus('[Jaringan] Memantik event pengiriman antarmuka Gemini...', 85);
   await sleep(INITIAL_DELAY_MS);
 
@@ -115,31 +104,54 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
   setGStatus('[Agen] Menggantung status, menunggu perakitan struktur JSON dan resolusi AI...', 90);
   const needsJsonResponse = payload.type === 'solve_image' || payload.type === 'solve_text';
   if (needsJsonResponse) {
-    await observeAndExtractJson(setGStatus, () => aborted, initialBubbleCount, provider.bubbleSelector);
+    await observeAndExtractJson(setGStatus, isAborted, initialBubbleCount, provider.bubbleSelector);
   } else {
     setTimeout(() => ui.root.remove(), 4000);
   }
-})();
-
-// ── Auto-solve prompt rules ────────────────────────────────────────────────────
-function buildAutoSolveRules() {
-  return `
-
-INSTRUKSI WAJIB – HANYA BALAS DENGAN 1 BLOK JSON INI, TIDAK ADA TEKS LAIN:
-\`\`\`json
-{ "jawaban": "[TEKS_JAWABAN]", "index_pilihan": [NOMOR] }
-\`\`\`
-Aturan pengisian:
-- Soal PILIHAN GANDA (1 jawaban) → Opsi sudah DIBERI NOMOR di daftar "Opsi" pada soal. "index_pilihan": WAJIB nomor opsi yang benar PERSIS dari daftar itu (1/2/3/...). "jawaban": salin teks opsi tersebut apa adanya. NOMOR adalah penentu utama — pastikan nomornya benar.
-- Soal PILIHAN GANDA MULTI-SELECT (Pilih satu atau lebih!) → "jawaban": ["teks opsi 1", "teks opsi 2"] (salin persis dari daftar Opsi), "index_pilihan": 0.
-- Soal TRUE/FALSE → "jawaban": "True" atau "False", "index_pilihan": nomor opsi sesuai daftar (biasanya 1 atau 2).
-- Soal ISIAN SINGKAT / NUMERIK / CLOZE (Banyak Kolom) → "jawaban": jawaban presisi. JIKA soal memiliki LEBIH DARI SATU kotak isian kosong, WAJIB jadikan "jawaban" sebagai Array of Strings sesuai urutan kotak, misal: ["isi 1", "isi 2"]. Jika hanya 1 kotak, cukup string biasa. "index_pilihan": 0.
-- Soal KODING/CODING → "jawaban": SELURUH kode program LENGKAP dari baris pertama sampai terakhir (gunakan \\n untuk baris baru), "index_pilihan": 0.
-  PENTING untuk KODING: Jika ada kode template, SERTAKAN juga template tersebut dalam jawaban. Jangan hapus kode template-nya.
-- Soal ESSAY → "jawaban": jawaban lengkap, "index_pilihan": 0.
-PENTING: Untuk pilihan ganda 1 jawaban, "index_pilihan" HARUS cocok dengan nomor opsi di daftar "Opsi" dan "jawaban" HARUS sama dengan teks opsi pada nomor itu. Jangan sampai nomor dan teks merujuk opsi berbeda.
-DILARANG menulis analisis atau penjelasan teks apapun di luar blok JSON.`;
 }
+
+// Baca payload terbaru dari storage, validasi tab & provider, lalu proses.
+async function consumePayloadFromStorage() {
+  let session = await chrome.storage.local.get(['flabPayload', 'pendingTabId']);
+  const payload = session.flabPayload;
+  if (!payload) { console.log('[FLAB] No payload – skip.'); return; }
+
+  // Provider di-identify dari host tab ini; hanya lanjut bila cocok dengan pilihan user.
+  const provider = getProviderByHost(location.hostname);
+  if (!provider)                             { console.log('[FLAB] Host bukan provider terdaftar – skip.'); return; }
+  if (payload.ai && payload.ai !== provider.id) { console.log('[FLAB] Provider mismatch – skip.'); return; }
+
+  const myTabId = await getMyTabId();
+
+  // Race fix (H1): background menulis pendingTabId di callback SETELAH tab dibuat.
+  // Bila tab Gemini ready lebih dulu, pendingTabId bisa belum ada → retry baca singkat
+  // sebelum menyatakan mismatch, agar payload tidak menggantung.
+  for (let i = 0; i < 10 && session.pendingTabId == null; i++) {
+    await sleep(150);
+    session = await chrome.storage.local.get(['flabPayload', 'pendingTabId']);
+  }
+  if (session.pendingTabId !== myTabId)      { console.log('[FLAB] Tab ID mismatch – skip.'); return; }
+
+  await chrome.storage.local.remove(['flabPayload', 'pendingTabId']);
+  console.log('[FLAB] Payload received, type:', payload.type);
+  await processPayload(payload, provider);
+}
+
+// Idempotensi: daftarkan listener sekali. Tab persisten dipakai ulang, jadi
+// background memicu soal berikutnya lewat NEW_PAYLOAD tanpa reload halaman.
+if (!window.__flabInjectorReady) {
+  window.__flabInjectorReady = true;
+  chrome.runtime.onMessage.addListener((msg, sender) => {
+    if (sender?.id && sender.id !== chrome.runtime.id) return;
+    if (msg.action === 'NEW_PAYLOAD') consumePayloadFromStorage();
+    if (msg.action === 'STOP_PROCESS') __activeAbort.v = true;
+  });
+}
+
+// Payload pertama: dijalankan saat tab baru dibuka & halaman selesai dimuat.
+consumePayloadFromStorage();
+
+// buildAutoSolveRules dipindah ke ../shared/solve-contract.js (dipakai bareng jalur API)
 
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
 async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1, bubbleSelector = BUBBLE_SELECTOR) {
@@ -381,6 +393,7 @@ function clickSend(provider) {
 // ── UI helpers ────────────────────────────────────────────────────────────────
 function buildGeminiUI() {
   const root = document.createElement('div');
+  root.id = '__flab-gem-ui';
   Object.assign(root.style, {
     position: 'fixed', bottom: '20px', left: '20px',
     background: 'rgba(20,20,22,0.92)', backdropFilter: 'blur(16px)',

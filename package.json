@@ -1,6 +1,6 @@
 {
   "name": "flab",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Chrome MV3 extension — automated Moodle quiz answering via LLM, with structured DOM extraction and answer filling.",
   "private": true,
   "type": "module",

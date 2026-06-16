@@ -15,6 +15,9 @@ export const PROVIDERS = {
     url: 'https://gemini.google.com/app',
     hostMatch: 'gemini.google.com',
     verified: true,
+    // Konfigurasi jalur API (opsional). Dipakai hanya bila user mengaktifkan Mode API
+    // dan mengisi API key. Model bisa diganti di sini tanpa ubah kode.
+    api: { kind: 'gemini', model: 'gemini-2.0-flash', keyUrl: 'https://aistudio.google.com/apikey' },
     // Editor input element (first match wins; ordered specific → generic).
     editorSelectors: [
       'rich-textarea .ql-editor[contenteditable="true"]',
@@ -44,6 +47,7 @@ export const PROVIDERS = {
     url: 'https://chatgpt.com/',
     hostMatch: 'chatgpt.com',
     verified: true,
+    api: { kind: 'openai', model: 'gpt-4o-mini', keyUrl: 'https://platform.openai.com/api-keys' },
     editorSelectors: [
       'div#prompt-textarea[contenteditable="true"]',
       'div[contenteditable="true"].ProseMirror',
@@ -64,6 +68,7 @@ export const PROVIDERS = {
     url: 'https://claude.ai/new',
     hostMatch: 'claude.ai',
     verified: true,
+    api: { kind: 'anthropic', model: 'claude-haiku-4-5', keyUrl: 'https://console.anthropic.com/settings/keys' },
     editorSelectors: [
       'div[contenteditable="true"].ProseMirror',
       'div[contenteditable="true"][aria-label*="prompt" i]',
