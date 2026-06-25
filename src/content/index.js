@@ -9,13 +9,13 @@ import { getExistingCode, syncAceToTextarea } from './ace-editor.js';
 import {
   findUnansweredQuestion, findButton, setNativeValue,
   highlightElement, fireClick, findNextButton, extractText,
-  scrollToResultElement, waitForBody,
+  scrollToResultElement, waitForBody, computeProgress,
 } from './dom-utils.js';
 import { detectQuestionImages, extractQuestionImages, stitchImages } from './question-images.js';
-import { getMoodleOptions } from './moodle-options.js';
+import { getMoodleOptions, getMatchRows } from './moodle-options.js';
 import {
   moodleFillMultichoice, moodleFillShortAnswer, moodleFillEssay,
-  moodleFillCodeRunner, genericFillInQuestion,
+  moodleFillCodeRunner, moodleFillMatch, genericFillInQuestion,
 } from './moodle-fill.js';
 import { recordOutcome, summarize } from './session-stats.js';
 import { parsePrecheckResult, checkIfCorrect } from './grading.js';
@@ -169,6 +169,7 @@ function renderUI(ai, prompt) {
         <div style="display:flex;align-items:center;gap:6px;">
           <span style="font-weight:600;font-size:12px;color:#EBEBF5;opacity:0.9;">FLAB</span>
           <span style="font-size:10px;color:#8E8E93;background:rgba(118,118,128,0.2);padding:1px 6px;border-radius:4px;font-weight:500;">${platformLabels[platform]}</span>
+          <span id="pai-progress" style="font-size:10px;color:#0A84FF;font-weight:600;"></span>
         </div>
         <button id="pai-stop" style="background:transparent;color:#EBEBF5;opacity:0.6;border:none;border-radius:12px;cursor:pointer;font-weight:500;font-size:11px;padding:2px 6px;transition:all 0.2s;">Batal</button>
       </div>
@@ -421,6 +422,16 @@ function extractQuestionsText(activeQueEl) {
     part += '\n\nOpsi (urutan = index_pilihan):\n' + options.map((o, j) => `  ${j + 1}. ${o}`).join('\n');
   }
 
+  if (type === 'match') {
+    const rows = getMatchRows(activeQueEl);
+    if (rows.length > 0) {
+      const optionSet = [...new Set(rows.flatMap(r => r.options))];
+      part += '\n\nBaris untuk dijodohkan (urutan = urutan jawaban):\n' +
+        rows.map((r, j) => `  ${j + 1}. ${r.stem}`).join('\n');
+      part += '\n\nPilihan yang tersedia:\n' + optionSet.map(o => `  - ${o}`).join('\n');
+    }
+  }
+
   return part;
 }
 
@@ -530,6 +541,11 @@ async function moodleFillAnswer(json) {
     filled = moodleFillEssay(queEl, originalJaw, status);
   }
 
+  // ── Match (menjodohkan) ───────────────────────────────────────────────────
+  if (type === 'match') {
+    filled = moodleFillMatch(queEl, originalJaw, status);
+  }
+
   // ── CodeRunner ────────────────────────────────────────────────────────────
   if (type === 'coderunner') {
     filled = await moodleFillCodeRunner(queEl, originalJaw, status);
@@ -540,7 +556,7 @@ async function moodleFillAnswer(json) {
   }
 
   // ── Unknown type — fallback ke generic ────────────────────────────────────
-  if (!filled && type === 'unknown') {
+  if (!filled && (type === 'unknown' || type === 'match')) {
     filled = genericFillInQuestion(queEl, originalJaw, jaw, idxHint, status);
   }
 
@@ -863,6 +879,7 @@ function moodleNavigateNext(status) {
     if (dangerBtn) {
       status('🏁 Soal terakhir! Tidak auto-submit. Review dulu.');
       chrome.storage.local.set({ isBatching: false });
+      try { chrome.runtime.sendMessage({ action: 'SESSION_DONE' }); } catch { /* context reload */ }
       setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
       return;
     }
@@ -895,6 +912,9 @@ function moodleNavigateNext(status) {
     status(`🏁 Semua soal selesai! ${ringkasan}. Review jawabanmu.`);
   });
   chrome.storage.local.set({ isBatching: false });
+  // Beri tahu background: sesi kelar → tutup tab provider (Gemini/dll) & fokuskan
+  // kembali tab Moodle ini, supaya tidak nyangkut di tab AI.
+  try { chrome.runtime.sendMessage({ action: 'SESSION_DONE' }); } catch { /* context reload */ }
   setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
 }
 
@@ -990,6 +1010,14 @@ function captureTab() {
 }
 
 function dispatch(ai, payload) {
+  // Catat progres (current/total) sebelum kirim agar PROGRESS_UPDATE punya angka,
+  // bukan "?/?". Dihitung dari quiz-nav Moodle (lintas-halaman) bila ada.
+  const prog = computeProgress();
+  if (prog) {
+    chrome.storage.local.set({ current: prog.current, total: prog.total });
+    const pEl = document.getElementById('pai-progress');
+    if (pEl) pEl.textContent = `${prog.current}/${prog.total}`;
+  }
   chrome.runtime.sendMessage({ action: 'OPEN_AI', payload: { ai, ...payload } });
 }
 

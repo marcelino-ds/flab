@@ -70,3 +70,28 @@ export function getMoodleOptions(queEl) {
     text: getRadioLabelText(input, queEl),
   }));
 }
+
+// Soal MATCH (menjodohkan): tiap baris punya teks stem + satu <select> pilihan.
+// Satu sumber kebenaran untuk extract (kirim ke AI) & fill (set tiap <select>),
+// sehingga urutan baris yang dilihat AI identik dengan urutan saat diisi.
+export function getMatchRows(queEl) {
+  if (!queEl) return [];
+  const selects = [...queEl.querySelectorAll('select')];
+  return selects.map((select, index) => {
+    // Stem = teks baris di sebelah kiri <select>. Coba beberapa pola DOM Moodle.
+    const row = select.closest('tr, .answer > div, .d-flex, p') || select.parentElement;
+    let stem = '';
+    if (row) {
+      const clone = row.cloneNode(true);
+      // Catatan: <select>.remove() adalah varian HTMLSelectElement (hapus <option> by
+      // index), BUKAN ChildNode.remove(). Pakai removeChild via parent agar select &
+      // option benar-benar terbuang dari clone.
+      clone.querySelectorAll('select, option, .accesshide, .sr-only').forEach(n => n.parentNode?.removeChild(n));
+      stem = (clone.innerText || clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    const options = [...select.options]
+      .map(o => (o.textContent || '').trim())
+      .filter(t => t && !/^(choose|pilih|\.\.\.|—)/i.test(t)); // buang placeholder
+    return { select, index, stem, options };
+  });
+}

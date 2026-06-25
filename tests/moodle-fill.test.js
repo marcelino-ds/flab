@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { moodleFillMultichoice } from '../src/content/moodle-fill.js';
+import { moodleFillMultichoice, moodleFillMatch } from '../src/content/moodle-fill.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
 
@@ -82,5 +82,62 @@ describe('moodleFillMultichoice — multi select (checkbox)', () => {
     expect(radios[0].checked).toBe(true);
     expect(radios[1].checked).toBe(false);
     expect(radios[2].checked).toBe(true);
+  });
+});
+
+describe('moodleFillMatch — soal menjodohkan', () => {
+  function matchQue(rows) {
+    const d = document.createElement('div');
+    d.className = 'que match';
+    d.innerHTML = '<table>' + rows.map(r =>
+      `<tr><td>${r.stem}</td><td><select>` +
+      ['<option value="">Pilih...</option>', ...r.opts.map((o, i) => `<option value="v${i}">${o}</option>`)].join('') +
+      '</select></td></tr>'
+    ).join('') + '</table>';
+    document.body.appendChild(d);
+    return d;
+  }
+
+  it('set tiap <select> ke opsi yang cocok, urut sesuai baris', () => {
+    const q = matchQue([
+      { stem: 'Indonesia', opts: ['Jakarta', 'Tokyo'] },
+      { stem: 'Jepang', opts: ['Jakarta', 'Tokyo'] },
+    ]);
+    const ok = moodleFillMatch(q, ['Jakarta', 'Tokyo'], () => {});
+    expect(ok).toBe(true);
+    const selects = [...q.querySelectorAll('select')];
+    expect(selects[0].selectedOptions[0].textContent).toBe('Jakarta');
+    expect(selects[1].selectedOptions[0].textContent).toBe('Tokyo');
+  });
+
+  it('cocok abai-besar/kecil & spasi berlebih', () => {
+    const q = matchQue([{ stem: 'X', opts: ['Merah Tua', 'Biru'] }]);
+    const ok = moodleFillMatch(q, ['  merah   tua '], () => {});
+    expect(ok).toBe(true);
+    expect(q.querySelector('select').selectedOptions[0].textContent).toBe('Merah Tua');
+  });
+
+  it('baris tanpa jawaban dilewati, baris lain tetap diisi', () => {
+    const q = matchQue([
+      { stem: 'A', opts: ['satu', 'dua'] },
+      { stem: 'B', opts: ['satu', 'dua'] },
+    ]);
+    const ok = moodleFillMatch(q, ['satu'], () => {}); // hanya baris pertama
+    expect(ok).toBe(true);
+    const selects = [...q.querySelectorAll('select')];
+    expect(selects[0].selectedOptions[0].textContent).toBe('satu');
+    expect(selects[1].value).toBe(''); // belum dipilih
+  });
+
+  it('tanpa <select> → false', () => {
+    const d = document.createElement('div');
+    d.className = 'que match';
+    d.innerHTML = '<p>kosong</p>';
+    expect(moodleFillMatch(d, ['x'], () => {})).toBe(false);
+  });
+
+  it('jawaban tak ada di opsi → tidak terisi, false', () => {
+    const q = matchQue([{ stem: 'A', opts: ['satu', 'dua'] }]);
+    expect(moodleFillMatch(q, ['tiga'], () => {})).toBe(false);
   });
 });

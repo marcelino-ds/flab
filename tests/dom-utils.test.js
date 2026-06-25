@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  findButton, findUnansweredQuestion, setNativeValue,
+  findButton, findUnansweredQuestion, setNativeValue, computeProgress,
 } from '../src/content/dom-utils.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
@@ -61,6 +61,22 @@ describe('findUnansweredQuestion', () => {
     const q = que('<input type="radio" checked>', 'que complete');
     expect(findUnansweredQuestion([q])).toBeNull();
   });
+
+  it('soal sudah dinilai correct dilewati (cegah loop re-solve)', () => {
+    const q = que('<input type="text" value="int[] a = new int[100];">', 'que correct');
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('soal incorrect dilewati (sudah dinilai, bukan untuk di-solve di pass ini)', () => {
+    const q = que('<input type="radio">', 'que incorrect');
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('lewati soal correct, pilih soal berikutnya yang belum dijawab', () => {
+    const a = que('<input type="text" value="ok">', 'que correct');
+    const b = que('<input type="radio">', 'que');
+    expect(findUnansweredQuestion([a, b])).toBe(b);
+  });
 });
 
 describe('setNativeValue', () => {
@@ -85,3 +101,32 @@ describe('setNativeValue', () => {
 // Catatan: findNextButton tidak diunit-test di sini — ia memfilter tombol via
 // offsetWidth/offsetHeight (visibility), dan happy-dom tidak melakukan layout
 // sehingga dimensi selalu 0. Verifikasi visibilitas dilakukan di browser nyata.
+
+describe('computeProgress', () => {
+  function navHtml(states) {
+    // states: array className tiap tombol soal
+    return '<div class="qn_buttons">' +
+      states.map(c => `<a class="qnbutton ${c}">x</a>`).join('') + '</div>';
+  }
+
+  it('quiz-nav: total = jumlah tombol, current = terjawab + 1', () => {
+    document.body.innerHTML = navHtml(['answered', 'answered', 'notyetanswered', 'notyetanswered']);
+    expect(computeProgress()).toEqual({ current: 3, total: 4 });
+  });
+
+  it('quiz-nav: current dibatasi total saat semua terjawab', () => {
+    document.body.innerHTML = navHtml(['answered', 'answered']);
+    expect(computeProgress()).toEqual({ current: 2, total: 2 });
+  });
+
+  it('fallback ke .que bila tak ada quiz-nav', () => {
+    document.body.innerHTML =
+      '<div class="que complete"></div><div class="que"></div><div class="que"></div>';
+    expect(computeProgress()).toEqual({ current: 2, total: 3 });
+  });
+
+  it('null bila tak ada penanda apa pun', () => {
+    document.body.innerHTML = '<p>halaman biasa</p>';
+    expect(computeProgress()).toBeNull();
+  });
+});

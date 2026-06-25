@@ -2,9 +2,16 @@
 
 export function findUnansweredQuestion(questions) {
   for (const q of questions) {
-    if (q.classList.contains('notyetanswered') ||
-      q.classList.contains('invalidanswer') ||
-      !q.classList.contains('complete')) {
+    const cl = q.classList;
+    // Sudah DINILAI (correct/incorrect/partiallycorrect) → jangan di-solve ulang.
+    // Moodle memberi kelas `correct` (bukan `complete`) pada soal yang sudah benar;
+    // tanpa guard ini soal benar terus dianggap "belum dijawab" → loop re-solve.
+    if (cl.contains('correct') || cl.contains('incorrect') || cl.contains('partiallycorrect')) {
+      continue;
+    }
+    if (cl.contains('notyetanswered') ||
+      cl.contains('invalidanswer') ||
+      !cl.contains('complete')) {
       return q;
     }
     const radios = q.querySelectorAll('input[type="radio"]');
@@ -154,6 +161,30 @@ export function scrollToResultElement(el, fallbackEl, forceInstant = false) {
       if (fallback) fallback.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } catch (_) { /**/ }
   }
+}
+
+// Hitung progres kuis dari blok navigasi soal Moodle (.qn_buttons). Lintas-halaman:
+// quiz-nav memuat tombol untuk SEMUA soal kuis, bukan hanya halaman ini.
+// total  = jumlah tombol soal (fallback: jumlah .que di halaman).
+// current = jumlah soal sudah dijawab + 1 (yang sedang dikerjakan), dibatasi total.
+// Mengembalikan null bila tak ada penanda (pemanggil skip update agar tak nimpa "?").
+export function computeProgress() {
+  const navBtns = [...document.querySelectorAll('.qn_buttons .qnbutton, .qn_buttons a.qnbutton, .quiznavigation a.qnbutton')];
+  if (navBtns.length > 0) {
+    const total = navBtns.length;
+    const answered = navBtns.filter(b =>
+      !/notyetanswered|todo|notyetdrawn/.test(b.className || '')
+    ).length;
+    return { current: Math.min(answered + 1, total), total };
+  }
+  // Fallback: hanya tahu soal di halaman ini.
+  const ques = document.querySelectorAll('.que');
+  if (ques.length > 0) {
+    const answered = [...ques].filter(q => q.classList.contains('complete') ||
+      q.classList.contains('correct') || q.classList.contains('incorrect')).length;
+    return { current: Math.min(answered + 1, ques.length), total: ques.length };
+  }
+  return null;
 }
 
 export function waitForBody(intervalMs, fn) {

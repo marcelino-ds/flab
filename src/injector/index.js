@@ -94,12 +94,23 @@ async function processPayload(payload, provider) {
   // Ambil jumlah bubble SEBELUM klik send agar tahu mana bubble respons yang baru
   const initialBubbleCount = document.querySelectorAll(provider.bubbleSelector).length;
 
+  // Tunggu tombol Send aktif (Gemini enable setelah teks masuk) sebelum klik —
+  // mencegah klik saat masih disabled / fallback Enter prematur.
+  await waitSendReady(provider);
+  if (myAbort.v) return;
+
   const sent = clickSend(provider);
   if (!sent) {
     setGStatus('[Error] Kegagalan menemukan elemen pemicu pengiriman.', 100, '#ff453a');
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
+
+  // Soal sudah terkirim → minta background balik fokus ke iLab. Tab ini tetap di
+  // belakang menyelesaikan jawaban (observer tahan throttle). Beri jeda kecil agar
+  // event submit Gemini benar-benar terproses sebelum tab kehilangan fokus.
+  await sleep(400);
+  try { chrome.runtime.sendMessage({ action: 'REFOCUS_LMS' }); } catch { /* context reload */ }
 
   setGStatus('[Agen] Menggantung status, menunggu perakitan struktur JSON dan resolusi AI...', 90);
   const needsJsonResponse = payload.type === 'solve_image' || payload.type === 'solve_text';
@@ -141,9 +152,16 @@ async function consumePayloadFromStorage() {
 // background memicu soal berikutnya lewat NEW_PAYLOAD tanpa reload halaman.
 if (!window.__flabInjectorReady) {
   window.__flabInjectorReady = true;
-  chrome.runtime.onMessage.addListener((msg, sender) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (sender?.id && sender.id !== chrome.runtime.id) return;
-    if (msg.action === 'NEW_PAYLOAD') consumePayloadFromStorage();
+    if (msg.action === 'NEW_PAYLOAD') {
+      // ACK sinkron WAJIB: background mengirim NEW_PAYLOAD dengan callback dan
+      // menganggap lastError ("port closed") sebagai tab mati → akan menutup tab ini
+      // & membuka tab baru tiap soal. Balas dulu agar tab persisten dipakai ulang.
+      sendResponse({ ok: true });
+      consumePayloadFromStorage();
+      return; // respons sinkron; tak perlu keep channel open
+    }
     if (msg.action === 'STOP_PROCESS') __activeAbort.v = true;
   });
 }
@@ -154,33 +172,53 @@ consumePayloadFromStorage();
 // buildAutoSolveRules dipindah ke ../shared/solve-contract.js (dipakai bareng jalur API)
 
 // ── JSON extractor (waits for AI streaming to finish) ─────────────────────────
+// Pakai MutationObserver, BUKAN setInterval: timer di tab background di-throttle
+// Chrome (bisa 1×/menit) → poll mandek → ekstensi terlihat "freeze" saat user pindah
+// tab. MutationObserver bereaksi tiap DOM streaming berubah & tidak kena throttle.
+// Timeout pakai wall-clock (Date.now), bukan hitungan tick, agar 4 menit tetap akurat.
 async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1, bubbleSelector = BUBBLE_SELECTOR) {
-  let ticks = 0;
-
   const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(bubbleSelector).length;
+  const startedAt = Date.now();
+  const TIMEOUT_MS = MAX_TICKS * TICK_INTERVAL_MS; // jaga durasi total sama (≈4 menit)
 
   return new Promise(resolve => {
-    const timer = setInterval(() => {
-      if (isAborted?.()) { clearInterval(timer); resolve(); return; }
+    let done = false;
+    let observer = null;
+    let ticker = null;
+    let debounceId = null;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      if (observer) observer.disconnect();
+      if (ticker) clearInterval(ticker);
+      if (debounceId) clearTimeout(debounceId);
+      resolve();
+    };
+
+    // Coba ekstrak jawaban dari bubble terakhir. Return true bila sudah final & terkirim.
+    const tryExtract = () => {
+      if (done) return true;
+      if (isAborted?.()) { finish(); return true; }
 
       const bubbles = document.querySelectorAll(bubbleSelector);
-      if (bubbles.length <= existingBubbleCount) { tick(); return; }
+      if (bubbles.length <= existingBubbleCount) return false;
       const node  = bubbles[bubbles.length - 1];
       const text  = node.innerText || node.textContent || '';
-      if (text.length < 5) return;
+      if (text.length < 5) return false;
 
-      if (text.includes('[TEKS_JAWABAN]') || text.includes('[NOMOR]')) { tick(); return; }
+      if (text.includes('[TEKS_JAWABAN]') || text.includes('[NOMOR]')) return false;
 
       const jPos = text.lastIndexOf('"jawaban"');
-      if (jPos === -1) { tick(); return; }
+      if (jPos === -1) return false;
 
       const s = text.lastIndexOf('{', jPos);
-      if (s === -1) { tick(); return; }
+      if (s === -1) return false;
 
       // Balanced brace-matching dari `s`, sadar string & escape. lastIndexOf('}')
       // global salah untuk jawaban KODING (penuh '{}') atau teks setelah blok JSON.
       const e = matchClosingBrace(text, s);
-      if (e === -1 || e <= s) { tick(); return; }
+      if (e === -1 || e <= s) return false;
 
       const block = text.slice(s, e + 1);
 
@@ -201,12 +239,12 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
              if (matchArr) {
                 obj = {
                    jawaban: [...matchArr[1].matchAll(/"([\s\S]*?)"/g)].map(m => m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')),
-                   index_pilihan: matchIdx ? parseInt(matchIdx[1]) : 0
+                   index_pilihan: matchIdx ? parseInt(matchIdx[1], 10) : 0
                 };
              } else if (matchStr) {
                 obj = {
                    jawaban: matchStr[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'),
-                   index_pilihan: matchIdx ? parseInt(matchIdx[1]) : 0
+                   index_pilihan: matchIdx ? parseInt(matchIdx[1], 10) : 0
                 };
              } else {
                 throw new Error("Fallback failed");
@@ -222,33 +260,48 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
 
       const isNullish = typeof jawaban === 'string' && (jawaban.toLowerCase() === 'null' || jawaban.toLowerCase() === 'undefined');
       if (ok && jawaban && !isNullish) {
-        clearInterval(timer);
         const displayJaw = Array.isArray(jawaban) ? jawaban.join(', ') : jawaban;
         const preview = displayJaw.length > 40 ? '(jawaban multiselect / format panjang)' : displayJaw;
         setGStatus(`[Kompilasi] Blok JSON berhasil diesktrak: <b>${escapeHtml(preview)}</b>${index_pilihan ? ` · opsi ke-${index_pilihan}` : ''}`, 100);
         chrome.runtime.sendMessage({ action: 'SOLVER_JSON_RESULT', data: { jawaban, index_pilihan } });
-        resolve();
+        finish();
+        return true;
+      }
+      return false;
+    };
+
+    // Ticker lambat (2 dtk) HANYA untuk: update label progres & cek timeout wall-clock.
+    // Bukan jalur utama deteksi (itu observer), jadi throttle background tak masalah.
+    ticker = setInterval(() => {
+      if (done) return;
+      if (isAborted?.()) { finish(); return; }
+      const elapsed = Date.now() - startedAt;
+      if (elapsed >= TIMEOUT_MS) {
+        setGStatus('[Timeout] Batas waktu tunggu tercapai. Menginisiasi mode pemulihan otomatis via LMS...', 100, '#ff9f0a');
+        chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
+        finish();
         return;
       }
+      const totalSec = Math.floor(elapsed / 1000);
+      const mnt = Math.floor(totalSec / 60);
+      const dtk = totalSec % 60;
+      const pct = Math.min(90, 10 + Math.round(elapsed / TIMEOUT_MS * 80));
+      setGStatus(`[AI] Menunggu & membaca respons... (${mnt}m ${String(dtk).padStart(2, '0')}s / 4m)`, pct);
+      tryExtract(); // jaring pengaman bila ada mutasi yang terlewat observer
+    }, 2000);
 
-      tick();
+    // Coba sekali di awal kalau-kalau jawaban sudah ada sebelum observer terpasang.
+    tryExtract();
 
-      function tick() {
-        ticks++;
-        if (ticks < MAX_TICKS) {
-          const mnt = Math.floor(ticks / 60);
-          const dtk = ticks % 60;
-          const pct = Math.min(90, 10 + Math.round(ticks / MAX_TICKS * 80));
-          setGStatus(`[AI] Proses komputasi iteratif berjalan... Membaca respons (${mnt}m ${String(dtk).padStart(2, '0')}s / 4m)`, pct);
-        }
-        if (ticks > MAX_TICKS) {
-          clearInterval(timer);
-          setGStatus('[Timeout] Interval polling terpenuhi. Menginisiasi mode pemulihan otomatis via LMS...', 100, '#ff9f0a');
-          chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
-          setTimeout(() => resolve(), INITIAL_DELAY_MS + 900);
-        }
-      }
-    }, TICK_INTERVAL_MS);
+    // Debounce callback observer: streaming Gemini memicu ratusan mutasi/detik, dan
+    // tryExtract() membaca innerText (memaksa reflow) → tab berat/nge-lag. Tunda
+    // eksekusi ~250ms sejak mutasi terakhir agar reflow tidak meledak saat streaming.
+    observer = new MutationObserver(() => {
+      if (done) return;
+      if (debounceId) return; // sudah ada eksekusi terjadwal
+      debounceId = setTimeout(() => { debounceId = null; tryExtract(); }, 250);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
   });
 }
 
@@ -365,12 +418,26 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
 }
 
 // ── Click send button ──────────────────────────────────────────────────────────
+// Hindari salah klik: tolak tombol yang jelas BUKAN kirim (stop/mic/lampiran/batal)
+// walau lolos selektor, dan anggap aria-disabled sebagai disabled.
+const SEND_EXCLUDE_RE = /\b(stop|cancel|batal|hentikan|mic|microphone|mikrofon|voice|suara|attach|lampir|upload|unggah|menu|setting|setelan)\b/i;
+
+function isClickableSend(btn) {
+  if (!btn) return false;
+  if (btn.disabled || btn.hasAttribute('disabled')) return false;
+  if (btn.getAttribute('aria-disabled') === 'true') return false;
+  if (btn.offsetParent === null) return false;
+  const label = (btn.getAttribute('aria-label') || btn.title || btn.innerText || '').toLowerCase();
+  if (SEND_EXCLUDE_RE.test(label)) return false;
+  return true;
+}
+
 function clickSend(provider) {
   const selectors = provider?.sendSelectors || [];
 
   for (const sel of selectors) {
     for (const btn of document.querySelectorAll(sel)) {
-      if (!btn.disabled && !btn.hasAttribute('disabled') && btn.offsetParent !== null) {
+      if (isClickableSend(btn)) {
         btn.click();
         return true;
       }
@@ -388,6 +455,19 @@ function clickSend(provider) {
     return true;
   }
   return false;
+}
+
+// Tunggu sampai tombol Send benar-benar aktif (Gemini meng-enable-nya setelah teks
+// terdeteksi). Lebih andal daripada delay buta — mencegah klik saat masih disabled.
+function waitSendReady(provider, timeout = 4000) {
+  return waitFor(() => {
+    for (const sel of (provider?.sendSelectors || [])) {
+      for (const btn of document.querySelectorAll(sel)) {
+        if (isClickableSend(btn)) return btn;
+      }
+    }
+    return null;
+  }, timeout, 150);
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────

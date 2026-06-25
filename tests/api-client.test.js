@@ -60,4 +60,9 @@ describe('buildUserPrompt', () => {
     const p = buildUserPrompt({ type: 'solve_image', dataUrl: 'data:image/png;base64,AA', prompt: '' });
     expect(p).toContain('gambar');
   });
+  it('payload type "image" (screenshot/snip) juga dianggap gambar', () => {
+    const p = buildUserPrompt({ type: 'image', dataUrl: 'data:image/png;base64,AA', prompt: '' });
+    expect(p).toContain('gambar');
+    expect(p).not.toContain('Berikut soalnya');
+  });
 });

@@ -175,7 +175,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     chrome.storage.local.get(['providerTabId', 'providerTabAi'], d => {
       const createFresh = () => {
         const launch = () => chrome.storage.local.set({ flabPayload: payload }, () => {
-          chrome.tabs.create({ url: providerUrl }, newTab => {
+          // active:true → tab provider dibuka & DIFOKUS. Gemini (Angular SPA) menunda
+          // render saat tab di background → editor tak siap, injeksi gagal, stuck.
+          // Setelah soal terkirim, injector memicu REFOCUS_LMS untuk balik ke iLab.
+          chrome.tabs.create({ url: providerUrl, active: true }, newTab => {
             chrome.storage.local.set({
               pendingTabId: newTab.id,
               providerTabId: newTab.id,
@@ -197,6 +200,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Tab masih ada? Validasi sebelum reuse — user bisa saja menutupnya.
       chrome.tabs.get(d.providerTabId, tab => {
         if (chrome.runtime.lastError || !tab) { createFresh(); return; }
+        // Fokus tab provider dulu: Gemini SPA menunda render di background → editor
+        // tak siap & NEW_PAYLOAD gagal inject. Setelah terkirim, REFOCUS_LMS balik ke iLab.
+        chrome.tabs.update(d.providerTabId, { active: true }, () => { void chrome.runtime.lastError; });
         chrome.storage.local.set({ flabPayload: payload, pendingTabId: d.providerTabId }, () => {
           chrome.tabs.sendMessage(d.providerTabId, { action: 'NEW_PAYLOAD' }, () => {
             // Tab hidup tapi injector tak merespons (mis. user navigasi keluar) → buka ulang.
@@ -206,6 +212,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     });
     }
+    return true;
+  }
+
+  // Soal sudah terkirim ke provider → balik fokus ke tab iLab/Moodle agar user
+  // melihat progres "soal ke-N". Tab provider tetap di belakang menyelesaikan jawaban
+  // (MutationObserver tahan throttle). Dipicu injector tepat setelah clickSend sukses.
+  if (msg.action === 'REFOCUS_LMS') {
+    chrome.storage.local.get(['batchTabId'], d => {
+      if (d.batchTabId) {
+        chrome.tabs.update(d.batchTabId, { active: true }, tab => {
+          void chrome.runtime.lastError;
+          if (tab?.windowId != null) chrome.windows.update(tab.windowId, { focused: true }, () => { void chrome.runtime.lastError; });
+        });
+      }
+    });
+    return true;
+  }
+
+  // Sesi selesai normal — fokuskan kembali tab iLab/Moodle & bersihkan key sesi.
+  // Tab provider SENGAJA TIDAK ditutup: dipertahankan agar sesi berikutnya reuse chat
+  // yang sama (tanpa cold-load) dan user bisa lihat histori jawaban bila perlu.
+  if (msg.action === 'SESSION_DONE') {
+    chrome.storage.local.get(['batchTabId'], d => {
+      if (d.batchTabId) {
+        chrome.tabs.update(d.batchTabId, { active: true }, tab => {
+          void chrome.runtime.lastError;
+          if (tab?.windowId != null) chrome.windows.update(tab.windowId, { focused: true }, () => { void chrome.runtime.lastError; });
+        });
+      }
+      // Pertahankan providerTabId/providerTabAi untuk reuse; buang sisa key sesi lain.
+      chrome.storage.local.remove(STALE_KEYS.filter(k => k !== 'providerTabId' && k !== 'providerTabAi'));
+    });
     return true;
   }
 

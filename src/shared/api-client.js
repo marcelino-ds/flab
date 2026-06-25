@@ -40,10 +40,16 @@ function parseJsonLoose(text) {
   return null;
 }
 
+// Payload bergambar: 'solve_image' (komposit soal) & 'image' (screenshot/snip).
+// Keduanya membawa dataUrl yang HARUS dikirim ke model, bukan hanya solve_image.
+function isImagePayload(payload) {
+  return (payload.type === 'solve_image' || payload.type === 'image') && !!payload.dataUrl;
+}
+
 // Bangun prompt user: instruksi tambahan + soal (teks) / penanda gambar.
 function buildUserPrompt(payload) {
   const extra = payload.prompt ? payload.prompt + '\n\n' : '';
-  if (payload.type === 'solve_image') {
+  if (isImagePayload(payload)) {
     return extra + 'Selesaikan soal pada gambar berikut.';
   }
   return extra + 'Berikut soalnya:\n\n' + (payload.text || '');
@@ -53,7 +59,7 @@ function buildUserPrompt(payload) {
 async function callGemini(apiCfg, key, payload) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiCfg.model}:generateContent?key=${encodeURIComponent(key)}`;
   const parts = [{ text: buildUserPrompt(payload) }];
-  if (payload.type === 'solve_image') {
+  if (isImagePayload(payload)) {
     const img = splitDataUrl(payload.dataUrl);
     if (img) parts.push({ inline_data: { mime_type: img.mime, data: img.base64 } });
   }
@@ -73,7 +79,7 @@ async function callGemini(apiCfg, key, payload) {
 
 // ── OpenAI (ChatGPT) ────────────────────────────────────────────────────────────
 async function callOpenAI(apiCfg, key, payload) {
-  const userContent = payload.type === 'solve_image'
+  const userContent = isImagePayload(payload)
     ? [{ type: 'text', text: buildUserPrompt(payload) }, { type: 'image_url', image_url: { url: payload.dataUrl } }]
     : buildUserPrompt(payload);
   const body = {
@@ -98,7 +104,7 @@ async function callOpenAI(apiCfg, key, payload) {
 // ── Anthropic (Claude) ──────────────────────────────────────────────────────────
 async function callAnthropic(apiCfg, key, payload) {
   const content = [{ type: 'text', text: buildUserPrompt(payload) }];
-  if (payload.type === 'solve_image') {
+  if (isImagePayload(payload)) {
     const img = splitDataUrl(payload.dataUrl);
     if (img) content.unshift({ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } });
   }

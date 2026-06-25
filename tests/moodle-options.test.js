@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getRadioLabelText, getMoodleOptions } from '../src/content/moodle-options.js';
+import { getRadioLabelText, getMoodleOptions, getMatchRows } from '../src/content/moodle-options.js';
 
 function que(innerHTML) {
   const d = document.createElement('div');
@@ -88,5 +88,46 @@ describe('getMoodleOptions — alignment index↔input', () => {
   it('queEl kosong → array kosong', () => {
     expect(getMoodleOptions(null)).toEqual([]);
     expect(getMoodleOptions(que('<p>tidak ada opsi</p>'))).toEqual([]);
+  });
+});
+
+describe('getMatchRows — soal menjodohkan', () => {
+  function matchQue(rows) {
+    const d = document.createElement('div');
+    d.className = 'que match';
+    d.innerHTML = '<table>' + rows.map(r =>
+      `<tr><td>${r.stem}</td><td><select>` +
+      ['<option value="0">Pilih...</option>', ...r.opts.map((o, i) => `<option value="${i + 1}">${o}</option>`)].join('') +
+      '</select></td></tr>'
+    ).join('') + '</table>';
+    return d;
+  }
+
+  it('ekstrak stem + opsi per baris, urut sesuai DOM', () => {
+    const q = matchQue([
+      { stem: 'Indonesia', opts: ['Jakarta', 'Tokyo'] },
+      { stem: 'Jepang', opts: ['Jakarta', 'Tokyo'] },
+    ]);
+    const rows = getMatchRows(q);
+    expect(rows.map(r => r.stem)).toEqual(['Indonesia', 'Jepang']);
+    expect(rows[0].options).toEqual(['Jakarta', 'Tokyo']);
+    expect(rows.map(r => r.index)).toEqual([0, 1]);
+  });
+
+  it('placeholder "Pilih..." dibuang dari options', () => {
+    const q = matchQue([{ stem: 'A', opts: ['Satu', 'Dua'] }]);
+    expect(getMatchRows(q)[0].options).not.toContain('Pilih...');
+  });
+
+  it('tiap baris merujuk elemen <select> untuk diisi', () => {
+    const q = matchQue([{ stem: 'A', opts: ['x'] }]);
+    expect(getMatchRows(q)[0].select).toBe(q.querySelector('select'));
+  });
+
+  it('queEl kosong / tanpa select → array kosong', () => {
+    expect(getMatchRows(null)).toEqual([]);
+    const d = document.createElement('div');
+    d.innerHTML = '<p>tanpa select</p>';
+    expect(getMatchRows(d)).toEqual([]);
   });
 });

@@ -27,13 +27,14 @@ export const PROVIDERS = {
       'div[contenteditable="true"]',
     ],
     // Send button (first enabled & visible match is clicked).
+    // CATATAN: jangan pakai selektor super-generik (mis. button[jsname][data-ogsr-up])
+    // — di halaman Google itu cocok ke banyak tombol (mic/toolbar) → salah klik.
     sendSelectors: [
       'button[aria-label="Send message"]',
       'button[aria-label="Kirim pesan"]',
       'button[aria-label*="Send" i]',
       'button[aria-label*="Kirim" i]',
       'button[data-mat-icon-name="send"]',
-      'button[jsname][data-ogsr-up]',
       'button.send-button',
       '[data-test-id="send-button"]',
     ],

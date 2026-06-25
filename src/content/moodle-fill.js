@@ -1,7 +1,7 @@
 // Pengisian jawaban per tipe soal Moodle (multichoice/short/essay/coderunner/generic).
 import { escapeHtml, sleep } from '../shared/util.js';
 import { moodleClickRadio, highlightElement, setNativeValue } from './dom-utils.js';
-import { getMoodleOptions } from './moodle-options.js';
+import { getMoodleOptions, getMatchRows } from './moodle-options.js';
 import { getAceEditor, getExistingCode, syncAceToTextarea } from './ace-editor.js';
 
 // Index-first: karena getMoodleOptions() menjamin urutan opsi yang dikirim ke AI
@@ -108,6 +108,40 @@ export function moodleFillShortAnswer(queEl, jawaban, status) {
 
   if (filledCount > 0) {
     status(`✅ Diisi: ${filledCount} kotak isian.`);
+    return true;
+  }
+  return false;
+}
+
+// ── Moodle: Match (menjodohkan) filler ────────────────────────────────────────
+// AI mengembalikan "jawaban" sebagai array teks opsi terpilih, URUT sesuai baris
+// stem yang dikirim. Tiap baris = satu <select>; kita set value <select> ke <option>
+// yang teksnya cocok dengan jawaban baris itu.
+export function moodleFillMatch(queEl, jawaban, status) {
+  const rows = getMatchRows(queEl);
+  if (rows.length === 0) return false;
+
+  const jawArr = Array.isArray(jawaban) ? jawaban : [jawaban];
+  const norm = s => String(s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+  let filledCount = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const want = norm(jawArr[i]);
+    if (!want) continue;
+    const { select } = rows[i];
+    const opt = [...select.options].find(o => norm(o.textContent) === want)
+      || [...select.options].find(o => norm(o.textContent).includes(want) && want.length > 2);
+    if (!opt) continue;
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+    if (setter) setter.call(select, opt.value); else select.value = opt.value;
+    select.dispatchEvent(new Event('input', { bubbles: true }));
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    highlightElement(select.closest('tr, .d-flex') || select.parentElement || select);
+    filledCount++;
+  }
+
+  if (filledCount > 0) {
+    status(`✅ Dijodohkan ${filledCount}/${rows.length} baris.`);
     return true;
   }
   return false;
