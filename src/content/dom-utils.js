@@ -1,12 +1,58 @@
 // Helper DOM murni (tanpa state internal / chrome.*). Dipakai lintas fill & flow.
 
+// Teks status soal. Sebagian tema/tipe Moodle (mis. CodeRunner adaptif di iLab
+// Gunadarma) TIDAK menaruh kelas correct/incorrect di `.que` — status HANYA muncul
+// sebagai teks badge ("Correct"/"Incorrect"/"Not yet answered"/"Benar"/"Salah").
+function getStateText(q) {
+  const el = q.querySelector('.info .state, .state, .outcome');
+  return (el?.innerText || el?.textContent || '').toLowerCase();
+}
+
+// Soal sudah dinilai BENAR? Cek "incorrect" lebih dulu agar substring "correct" di
+// dalam "incorrect" tak salah klaim. "Not yet answered" → belum dinilai (false).
+export function isQuestionCorrect(q) {
+  const cl = q.classList;
+  if (cl.contains('incorrect') || cl.contains('partiallycorrect')) return false;
+  if (cl.contains('correct')) return true;
+  const t = getStateText(q);
+  if (!t || /not\s*yet\s*answered|belum\s*dijawab/.test(t)) return false;
+  if (/incorrect|partially\s*correct|\bsalah\b|sebagian\s*benar/.test(t)) return false;
+  return /\bcorrect\b|\bbenar\b/.test(t);
+}
+
+// Soal sudah dinilai SALAH / sebagian benar?
+export function isQuestionIncorrect(q) {
+  const cl = q.classList;
+  if (cl.contains('incorrect') || cl.contains('partiallycorrect')) return true;
+  if (cl.contains('correct')) return false;
+  const t = getStateText(q);
+  if (!t || /not\s*yet\s*answered|belum\s*dijawab/.test(t)) return false;
+  return /incorrect|partially\s*correct|\bsalah\b|sebagian\s*benar/.test(t);
+}
+
+// Sudah dinilai (benar ATAU salah)? Dipakai untuk membedakan dari "belum dijawab".
+export function isQuestionGraded(q) {
+  return isQuestionCorrect(q) || isQuestionIncorrect(q);
+}
+
+// Soal masih bisa di-CHECK ulang? (tombol Check/Periksa/Submit masih ada → penalty
+// regime mengizinkan kirim ulang). Soal salah yang resubmittable HARUS di-solve
+// ulang, bukan dilewati — inilah fitur "perbaiki sampai benar".
+export function canResubmit(q) {
+  return !!findButton(q, ['check', 'periksa', 'submit'], ['precheck', 'pre-check']);
+}
+
 export function findUnansweredQuestion(questions) {
   for (const q of questions) {
     const cl = q.classList;
-    // Sudah DINILAI (correct/incorrect/partiallycorrect) → jangan di-solve ulang.
-    // Moodle memberi kelas `correct` (bukan `complete`) pada soal yang sudah benar;
-    // tanpa guard ini soal benar terus dianggap "belum dijawab" → loop re-solve.
-    if (cl.contains('correct') || cl.contains('incorrect') || cl.contains('partiallycorrect')) {
+    // BENAR → jangan pernah di-solve ulang (cegah loop re-solve).
+    if (isQuestionCorrect(q)) {
+      continue;
+    }
+    // SALAH → solve ulang bila masih bisa di-Check (dibatasi counter retry &
+    // circuit breaker); kalau sudah terminal (tak ada tombol Check) → lewati.
+    if (isQuestionIncorrect(q)) {
+      if (canResubmit(q)) return q;
       continue;
     }
     if (cl.contains('notyetanswered') ||
@@ -30,6 +76,47 @@ export function findUnansweredQuestion(questions) {
   }
   return null;
 }
+
+// CodeRunner GapFill: jawaban berupa deretan kotak <input> kecil yang disisipkan di
+// antara teks template (mis. `for (` □ ` : ` □ `) {` □ `}`). Tiap kotak hanya butuh
+// POTONGAN kecil, bukan statement utuh — beda dari CodeRunner Ace (satu editor).
+// Kotak gapfill = input teks terlihat, BUKAN ace_text-input/radio/checkbox/submit.
+export function getGapFillInputs(queEl) {
+  if (!queEl) return [];
+  return [...queEl.querySelectorAll(
+    'input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=submit]):not([type=button])'
+  )].filter(el => el.offsetParent !== null && !el.classList.contains('ace_text-input'));
+}
+
+// Rekonstruksi template gapfill jadi teks dengan penanda [GAP1], [GAP2], ... di posisi
+// tiap kotak input — supaya AI tahu PERSIS apa yang sudah ada di sekeliling tiap gap
+// dan hanya mengisi potongan yang hilang (bukan menulis ulang `for` dll). Penjelajahan
+// DOM in-order menjaga urutan gap = urutan kotak = urutan array jawaban.
+export function buildGapFillTemplate(queEl, inputs) {
+  const container = inputs[0]?.closest('.answer, .formulation, .coderunner-ui-element, .qtext') ||
+    queEl.querySelector('.answer, .formulation') || queEl;
+  const idxOf = new Map(inputs.map((el, i) => [el, i]));
+  let out = '';
+  const walk = node => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.textContent;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        if (child.tagName === 'INPUT' && idxOf.has(child)) {
+          out += `[GAP${idxOf.get(child) + 1}]`;
+        } else if (child.tagName === 'BR') {
+          out += '\n';
+        } else {
+          walk(child);
+        }
+      }
+    }
+  };
+  walk(container);
+  // Rapikan whitespace berlebih tapi pertahankan newline antar baris template.
+  return out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 
 // Find button by keywords inside a question element or globally
 export function findButton(queEl, keywords, excludeKeywords = []) {

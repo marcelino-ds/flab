@@ -10,6 +10,8 @@ import {
   findUnansweredQuestion, findButton, setNativeValue,
   highlightElement, fireClick, findNextButton, extractText,
   scrollToResultElement, waitForBody, computeProgress,
+  isQuestionCorrect, isQuestionIncorrect, canResubmit,
+  getGapFillInputs, buildGapFillTemplate,
 } from './dom-utils.js';
 import { detectQuestionImages, extractQuestionImages, stitchImages } from './question-images.js';
 import { getMoodleOptions, getMatchRows } from './moodle-options.js';
@@ -282,13 +284,12 @@ async function handleSolve(ai, prompt, isRetry = false) {
       }
     }
     const questions = document.querySelectorAll('.que');
+    // "Selesai" = tiap soal sudah BENAR, atau salah-terminal (tak bisa di-Check ulang).
+    // Soal salah yang masih bisa di-Check ulang BUKAN selesai → harus di-solve ulang
+    // (fitur perbaiki sampai benar), jadi jangan langsung navigasi ke halaman berikut.
     const allHaveFeedback = questions.length > 0 && [...questions].every(q => {
-      const isCorrectLike = q.classList.contains('correct') || q.classList.contains('partiallycorrect') || q.querySelector('.rightanswer');
-      if (isCorrectLike) return true;
-      if (q.classList.contains('incorrect')) {
-        const hasCheckBtn = findButton(q, ['check', 'periksa', 'submit'], ['precheck', 'pre-check']);
-        return !hasCheckBtn;
-      }
+      if (isQuestionCorrect(q) || q.querySelector('.rightanswer')) return true;
+      if (isQuestionIncorrect(q)) return !canResubmit(q);
       return false;
     });
 
@@ -445,6 +446,24 @@ function extractCodeRunnerContext(activeQueEl) {
 
   const type = detectQuestionType(activeQueEl);
   if (type !== 'coderunner') return '';
+
+  // GapFill: kotak <input> kecil di antara teks template. AI harus mengisi POTONGAN
+  // tiap gap, BUKAN menulis ulang seluruh program (itu yang bikin `for` dobel).
+  const gaps = getGapFillInputs(activeQueEl);
+  if (gaps.length > 0) {
+    const tmpl = buildGapFillTemplate(activeQueEl, gaps);
+    return `[SOAL CODERUNNER MODE GAPFILL — ISI TIAP KOTAK, BUKAN TULIS ULANG SEMUA]
+Ada ${gaps.length} kotak isian ([GAP1]..[GAP${gaps.length}]) yang disisipkan di dalam template kode berikut. Teks di LUAR penanda [GAPn] SUDAH tercetak di soal dan TIDAK boleh kamu tulis ulang.
+\`\`\`
+${tmpl}
+\`\`\`
+ATURAN GAPFILL:
+- "jawaban" WAJIB berupa array of strings dengan TEPAT ${gaps.length} elemen, urut [GAP1], [GAP2], ... [GAP${gaps.length}].
+- Tiap elemen = HANYA potongan yang hilang di gap itu (sependek mungkin). JANGAN sertakan teks template di sekitarnya.
+- Contoh: jika template "for ( [GAP1] : [GAP2] ) {" maka GAP1="int n", GAP2="nilai" — JANGAN tulis "for (int n" atau "for (int n : nilai){".
+- Jangan menduplikasi keyword (for/while/if) yang sudah ada di template.
+"index_pilihan": 0.`;
+  }
 
   const existingCode = getExistingCode(activeQueEl);
   if (!existingCode.trim()) return '';
@@ -730,7 +749,11 @@ async function moodleCheckAndNavigate(queEl, status) {
         window.removeEventListener('unload', unloadListener);
         return;
       }
-      if (queEl.classList.contains('correct') || queEl.classList.contains('incorrect') || queEl.querySelector('.outcome') || queEl.classList.contains('complete')) {
+      const stateTxt = (queEl.querySelector('.info .state, .state')?.innerText || '').toLowerCase();
+      const stateGraded = /correct|incorrect|\bbenar\b|\bsalah\b/.test(stateTxt) && !/not\s*yet/.test(stateTxt);
+      if (queEl.classList.contains('correct') || queEl.classList.contains('incorrect') ||
+        queEl.querySelector('.outcome') || queEl.classList.contains('complete') ||
+        queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || stateGraded) {
         ajaxDone = true;
         break;
       }

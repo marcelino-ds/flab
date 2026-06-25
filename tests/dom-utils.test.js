@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import {
   findButton, findUnansweredQuestion, setNativeValue, computeProgress,
+  isQuestionGraded, isQuestionCorrect, isQuestionIncorrect, canResubmit,
+  getGapFillInputs, buildGapFillTemplate,
 } from '../src/content/dom-utils.js';
 
 afterEach(() => { document.body.innerHTML = ''; });
@@ -67,15 +69,87 @@ describe('findUnansweredQuestion', () => {
     expect(findUnansweredQuestion([q])).toBeNull();
   });
 
-  it('soal incorrect dilewati (sudah dinilai, bukan untuk di-solve di pass ini)', () => {
+  it('soal incorrect TANPA tombol Check dilewati (terminal, tak bisa diperbaiki)', () => {
     const q = que('<input type="radio">', 'que incorrect');
     expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('soal incorrect MASIH bisa di-Check → dipilih ulang (perbaiki sampai benar)', () => {
+    const q = que('<textarea>kode salah</textarea><button>Check</button>', 'que incorrect');
+    expect(isQuestionIncorrect(q)).toBe(true);
+    expect(canResubmit(q)).toBe(true);
+    expect(findUnansweredQuestion([q])).toBe(q);
+  });
+
+  it('incorrect via teks .state + tombol Check (tanpa kelas) → dipilih ulang', () => {
+    const q = que(
+      '<div class="info"><div class="state">Incorrect</div></div>' +
+      '<textarea>kode</textarea><button>Check</button>',
+      'que coderunner'
+    );
+    expect(isQuestionCorrect(q)).toBe(false);
+    expect(isQuestionIncorrect(q)).toBe(true);
+    expect(findUnansweredQuestion([q])).toBe(q);
   });
 
   it('lewati soal correct, pilih soal berikutnya yang belum dijawab', () => {
     const a = que('<input type="text" value="ok">', 'que correct');
     const b = que('<input type="radio">', 'que');
     expect(findUnansweredQuestion([a, b])).toBe(b);
+  });
+
+  it('soal dinilai correct via teks .state (tanpa kelas correct) dilewati', () => {
+    // CodeRunner iLab Gunadarma: .que tak punya kelas correct, status di .info .state.
+    const q = que(
+      '<div class="info"><div class="state">Correct</div></div>' +
+      '<textarea>nilai[5] = 89;</textarea>',
+      'que coderunner'
+    );
+    expect(isQuestionGraded(q)).toBe(true);
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('soal "Not yet answered" via teks tetap dianggap belum dijawab', () => {
+    const q = que(
+      '<div class="info"><div class="state">Not yet answered</div></div>' +
+      '<textarea></textarea>',
+      'que coderunner'
+    );
+    expect(isQuestionGraded(q)).toBe(false);
+    expect(findUnansweredQuestion([q])).toBe(q);
+  });
+});
+
+describe('getGapFillInputs + buildGapFillTemplate', () => {
+  it('deteksi kotak gapfill (abaikan hidden/submit/ace)', () => {
+    const q = que(
+      '<div class="answer">for ( <input type="text"> : <input type="text"> ) {}' +
+      '<input type="hidden"><input type="submit"></div>',
+      'que coderunner'
+    );
+    expect(getGapFillInputs(q).length).toBe(2);
+  });
+
+  it('rekonstruksi template dengan penanda [GAPn] urut posisi', () => {
+    const q = que(
+      '<div class="answer">for ( <input type="text"> : <input type="text"> ) {<br>' +
+      '<input type="text"><br>}</div>',
+      'que coderunner'
+    );
+    const inputs = getGapFillInputs(q);
+    const tmpl = buildGapFillTemplate(q, inputs);
+    expect(tmpl).toContain('for (');
+    expect(tmpl).toContain('[GAP1]');
+    expect(tmpl).toContain('[GAP2]');
+    expect(tmpl).toContain('[GAP3]');
+    // Urutan penanda harus sesuai urutan kemunculan kotak.
+    expect(tmpl.indexOf('[GAP1]')).toBeLessThan(tmpl.indexOf('[GAP2]'));
+    expect(tmpl.indexOf('[GAP2]')).toBeLessThan(tmpl.indexOf('[GAP3]'));
+  });
+
+  it('soal tanpa kotak inline → array kosong', () => {
+    const q = que('<div class="ace_editor"></div>', 'que coderunner');
+    expect(getGapFillInputs(q).length).toBe(0);
   });
 });
 
