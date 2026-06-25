@@ -20,7 +20,7 @@ import {
   moodleFillCodeRunner, moodleFillMatch, genericFillInQuestion,
 } from './moodle-fill.js';
 import { recordOutcome, summarize } from './session-stats.js';
-import { parsePrecheckResult, checkIfCorrect } from './grading.js';
+import { checkIfCorrect } from './grading.js';
 
 // Guard idempotensi: bila content.js sudah ter-inject di dokumen ini, hentikan
 // SEBELUM deklarasi const apa pun agar re-injeksi tidak melempar "already declared".
@@ -154,49 +154,107 @@ function renderUI(ai, prompt) {
   const platformLabels = { moodle: 'Moodle', generic: '—' };
 
   if (!ui) {
+    injectOverlayStyle();
     ui = document.createElement('div');
     ui.id = 'pai-ui';
+    // Light "liquid glass" — sibling tema popup. Frosted putih + hairline + inset
+    // sheen, teks gelap agar tetap terbaca di atas halaman Moodle apa pun.
     Object.assign(ui.style, {
       position: 'fixed', bottom: '24px', right: '24px',
-      background: 'rgba(30, 30, 32, 0.85)', backdropFilter: 'blur(24px)',
-      WebkitBackdropFilter: 'blur(24px)',
-      border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '14px',
-      padding: '12px 16px', zIndex: '2147483647',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
-      color: '#F5F5F7', fontSize: '12.5px', boxShadow: '0 8px 32px rgba(0, 0, 0, 0.24)',
-      minWidth: '240px', maxWidth: '320px', display: 'flex', flexDirection: 'column', gap: '8px',
+      background: 'linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.62) 100%)',
+      backdropFilter: 'blur(30px) saturate(180%)',
+      WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+      border: '0.5px solid rgba(255, 255, 255, 0.7)', borderRadius: '18px',
+      padding: '13px 15px', zIndex: '2147483647',
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      color: '#1d1d1f', fontSize: '12.5px',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -8px 16px -8px rgba(255,255,255,0.5)',
+      minWidth: '244px', maxWidth: '320px', display: 'flex', flexDirection: 'column', gap: '9px',
+      WebkitFontSmoothing: 'antialiased',
     });
+    const chevron = '<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     ui.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,0.06);">
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="font-weight:600;font-size:12px;color:#EBEBF5;opacity:0.9;">FLAB</span>
-          <span style="font-size:10px;color:#8E8E93;background:rgba(118,118,128,0.2);padding:1px 6px;border-radius:4px;font-weight:500;">${platformLabels[platform]}</span>
-          <span id="pai-progress" style="font-size:10px;color:#0A84FF;font-weight:600;"></span>
+      <div id="pai-head" style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <div style="display:flex;align-items:center;gap:7px;min-width:0;">
+          <span style="font-weight:700;font-size:13px;color:#1d1d1f;letter-spacing:-0.3px;">flab</span>
+          <span style="font-size:9.5px;color:#1a7f37;background:rgba(52,199,89,0.22);border:0.5px solid rgba(255,255,255,0.6);padding:2px 7px;border-radius:100px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;">${platformLabels[platform]}</span>
+          <span id="pai-progress" style="font-size:11px;color:#007AFF;font-weight:700;letter-spacing:-0.1px;"></span>
         </div>
-        <button id="pai-stop" style="background:transparent;color:#EBEBF5;opacity:0.6;border:none;border-radius:12px;cursor:pointer;font-weight:500;font-size:11px;padding:2px 6px;transition:all 0.2s;">Batal</button>
+        <div style="display:flex;align-items:center;gap:2px;flex-shrink:0;">
+          <button id="pai-collapse" aria-label="Sembunyikan detail" aria-expanded="true" style="display:flex;align-items:center;justify-content:center;background:transparent;color:#007AFF;border:none;border-radius:8px;cursor:pointer;padding:4px;">${chevron}</button>
+          <button id="pai-stop" style="background:transparent;color:rgba(60,60,67,0.6);border:none;border-radius:8px;cursor:pointer;font-weight:600;font-size:11px;padding:3px 8px;transition:all 0.2s;">Batal</button>
+        </div>
       </div>
-      <div id="pai-status" style="font-size:13px;color:#FFFFFF;line-height:1.4;font-weight:400;margin-top:2px;"></div>
+      <div id="pai-status" style="font-size:12.5px;color:#1d1d1f;line-height:1.45;font-weight:500;"></div>
     `;
     document.body.appendChild(ui);
-
-    const stopBtn = document.getElementById('pai-stop');
-    stopBtn.addEventListener('mouseover', () => { stopBtn.style.color = '#FF453A'; stopBtn.style.opacity = '1'; stopBtn.style.background = 'rgba(255, 69, 58, 0.1)'; });
-    stopBtn.addEventListener('mouseout', () => { stopBtn.style.color = '#EBEBF5'; stopBtn.style.opacity = '0.6'; stopBtn.style.background = 'transparent'; });
-
-    stopBtn.addEventListener('click', () => {
-      window.__flabAborted = true; // INSTANT ABORT FLAG
-      try {
-        chrome.storage.local.set({ isBatching: false });
-        chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan tab AI jika sedang terbuka
-      } catch (e) {
-        console.warn('[FLAB] Context invalidated. Extension reloaded?', e);
-      }
-      ui.innerHTML = `<div style="padding:12px;text-align:center;color:#ff453a;font-weight:700;font-size:13px;">[Sistem] Proses dihentikan paksa.</div>`;
-      setTimeout(() => ui?.remove(), 2500);
-    });
+    wireOverlayButtons(ui);
+    applyCollapsed(ui);
   }
-  setStatus(`<span style="opacity:0.6">Automasi diluncurkan, memulai persiapan...</span>`, ui);
+  setStatus(`<span style="color:rgba(60,60,67,0.6)">Automasi diluncurkan, memulai persiapan...</span>`, ui);
   return ui;
+}
+
+// Scoped style untuk overlay — semua selector di-prefix #pai-ui agar tak bocor ke
+// halaman host. Inject sekali (guard id) — menangani transisi collapse, rotasi
+// chevron, hover Batal, dan prefers-reduced-motion.
+function injectOverlayStyle() {
+  if (document.getElementById('pai-ui-style')) return;
+  const s = document.createElement('style');
+  s.id = 'pai-ui-style';
+  s.textContent = `
+    #pai-ui #pai-status{overflow:hidden;max-height:200px;opacity:1;transition:max-height .35s cubic-bezier(0.32,0.72,0,1),opacity .25s cubic-bezier(0.32,0.72,0,1),margin .35s cubic-bezier(0.32,0.72,0,1);}
+    #pai-ui.pai-collapsed{gap:0;}
+    #pai-ui.pai-collapsed #pai-status{max-height:0;opacity:0;margin:0;}
+    #pai-ui #pai-collapse svg{transition:transform .3s cubic-bezier(0.32,0.72,0,1);}
+    #pai-ui.pai-collapsed #pai-collapse svg{transform:rotate(180deg);}
+    #pai-ui #pai-collapse:hover{background:rgba(0,122,255,0.1);}
+    #pai-ui #pai-stop:hover{color:#FF3B30 !important;background:rgba(255,59,48,0.1) !important;}
+    @media (prefers-reduced-motion: reduce){
+      #pai-ui #pai-status,#pai-ui #pai-collapse svg{transition:none;}
+    }
+  `;
+  (document.head || document.documentElement).appendChild(s);
+}
+
+// Pasang listener tombol overlay (collapse + stop). Dipanggil sekali saat #pai-ui
+// pertama dibuat — di dalam guard if(!ui) — jadi tak ada listener dobel saat re-render.
+function wireOverlayButtons(ui) {
+  const collapseBtn = ui.querySelector('#pai-collapse');
+  collapseBtn?.addEventListener('click', () => {
+    const collapsed = ui.classList.toggle('pai-collapsed');
+    collapseBtn.setAttribute('aria-expanded', String(!collapsed));
+    collapseBtn.setAttribute('aria-label', collapsed ? 'Tampilkan detail' : 'Sembunyikan detail');
+    try { chrome.storage.local.set({ overlayCollapsed: collapsed }); } catch { /* context reload */ }
+  });
+
+  const stopBtn = ui.querySelector('#pai-stop');
+  stopBtn.addEventListener('click', () => {
+    window.__flabAborted = true; // INSTANT ABORT FLAG
+    try {
+      chrome.storage.local.set({ isBatching: false });
+      chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan tab AI jika sedang terbuka
+    } catch (e) {
+      console.warn('[FLAB] Context invalidated. Extension reloaded?', e);
+    }
+    ui.innerHTML = `<div style="padding:12px;text-align:center;color:#FF3B30;font-weight:700;font-size:13px;">[Sistem] Proses dihentikan paksa.</div>`;
+    ui.classList.remove('pai-collapsed');
+    setTimeout(() => ui?.remove(), 2500);
+  });
+}
+
+// Terapkan preferensi collapse tersimpan. renderUI tetap sinkron — baca storage di
+// callback lalu set class. Default: expanded (belum ada preferensi).
+function applyCollapsed(ui) {
+  storageGet(['overlayCollapsed']).then(d => {
+    const collapsed = !!d.overlayCollapsed;
+    ui.classList.toggle('pai-collapsed', collapsed);
+    const btn = ui.querySelector('#pai-collapse');
+    if (btn) {
+      btn.setAttribute('aria-expanded', String(!collapsed));
+      btn.setAttribute('aria-label', collapsed ? 'Tampilkan detail' : 'Sembunyikan detail');
+    }
+  });
 }
 
 function setStatus(msg, ui = document.getElementById('pai-ui')) {
@@ -223,8 +281,7 @@ async function handleSolve(ai, prompt, isRetry = false) {
       window.__flabAborted = false;
       dispatchCount = 1;
       await chrome.storage.local.set({ solveRetryCount: 0, precheckRetryCount: 0, checkRetryCount: 0, solveDispatchCount: 1 });
-      await chrome.storage.local.remove(['precheckError', 'precheckCode']);
-    } else {
+      await chrome.storage.local.remove(['precheckError', 'precheckCode']);    } else {
       const sc = await storageGet(['solveDispatchCount']);
       dispatchCount = Number(sc.solveDispatchCount ?? 0) + 1;
       await chrome.storage.local.set({ solveDispatchCount: dispatchCount });
@@ -284,6 +341,12 @@ async function handleSolve(ai, prompt, isRetry = false) {
       }
     }
     const questions = document.querySelectorAll('.que');
+
+    // Resume setelah reload PRECHECK: iLab me-reload halaman saat PRECHECK diklik.
+    // Bila ada marker precheckPending & hasil precheck sudah tampil di soal, evaluasi
+    // di sini lalu lanjut ke CHECK — JANGAN solve ulang (itulah sumber loop).
+    if (await maybeResumeAfterPrecheck(questions, s => setStatus(s, ui))) return;
+
     // "Selesai" = tiap soal sudah BENAR, atau salah-terminal (tak bisa di-Check ulang).
     // Soal salah yang masih bisa di-Check ulang BUKAN selesai → harus di-solve ulang
     // (fitur perbaiki sampai benar), jadi jangan langsung navigasi ke halaman berikut.
@@ -594,7 +657,61 @@ async function moodleFillAnswer(json) {
 // Moodle: PRECHECK → Retry → CHECK → Navigate (untuk CodeRunner)
 // ══════════════════════════════════════════════════════════════════════════════
 
+// Resume setelah reload akibat PRECHECK. iLab Gunadarma me-reload halaman ketika
+// PRECHECK diklik (form submit, bukan AJAX). Reload → background re-inject &
+// START → handleSolve fresh. Karena PRECHECK TIDAK menilai soal (status tetap
+// "Not yet answered") & kode sudah terisi, findUnansweredQuestion memilih soal itu
+// lagi → kirim ulang ke Gemini → LOOP tak berujung.
+//
+// Guard ini dipanggil di awal alur Moodle: bila marker precheckPending ada &
+// hasil precheck sudah tampil di DOM, evaluasi hasilnya lalu lanjut ke CHECK
+// (atau retry bila gagal eksplisit) — TANPA solve ulang. Return true bila resume
+// ditangani (caller harus berhenti), false bila tidak ada yang perlu di-resume.
+async function maybeResumeAfterPrecheck(questions, status) {
+  const d = await storageGet(['precheckPending']);
+  const marker = d.precheckPending;
+  if (!marker) return false;
 
+  // Marker basi (mis. > 2 menit) → buang, jangan resume.
+  if (marker.ts && Date.now() - marker.ts > 120000) {
+    await chrome.storage.local.remove(['precheckPending']);
+    return false;
+  }
+
+  // Cocokkan soal: pakai queId bila ada, jika tidak pakai soal pertama yg punya
+  // hasil precheck / coderunner result di DOM.
+  let queEl = marker.queId ? document.getElementById(marker.queId) : null;
+  const hasResult = q => q?.querySelector(
+    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results'
+  );
+  if (!queEl || !hasResult(queEl)) {
+    queEl = [...questions].find(hasResult) || queEl;
+  }
+
+  // Belum dinilai & belum ada hasil precheck → reload belum selesai render hasil.
+  // Jangan resume (biarkan alur normal), tapi pertahankan marker untuk percobaan
+  // berikutnya hanya bila memang tak ada hasil sama sekali.
+  const resultEl = hasResult(queEl);
+  if (!queEl || !resultEl) {
+    // Tak ada hasil precheck di halaman → marker tak berguna, buang agar tak nyangkut.
+    await chrome.storage.local.remove(['precheckPending']);
+    return false;
+  }
+
+  // Marker terpakai — konsumsi sekarang agar tidak dievaluasi dua kali.
+  await chrome.storage.local.remove(['precheckPending']);
+
+  // PENTING: JANGAN klasifikasi teks/tabel hasil precheck untuk pass/fail. Markup
+  // hasil CodeRunner bergantung tema & sering menampilkan boilerplate ("must pass
+  // all tests... try again") bahkan saat precheck LULUS → klasifikasi teks selalu
+  // bisa salah (sumber loop "PRECHECK gagal padahal benar"). Precheck hanya untuk
+  // memberi AI feedback; penentu benar/salah adalah CHECK (badge .info .state resmi
+  // Moodle, dibaca checkIfCorrect). Jadi pasca-reload langsung lanjut ke CHECK.
+  status('✅ PRECHECK selesai. Menjalankan CHECK (penilai resmi)...');
+  await sleep(600);
+  await moodleCheckAndNavigate(queEl, status);
+  return true;
+}
 
 async function moodlePrecheckFlow(queEl, status) {
   if (!(await isStillBatching())) return;
@@ -614,6 +731,13 @@ async function moodlePrecheckFlow(queEl, status) {
 
   clearPrecheckResult(queEl);
 
+  // Marker: di iLab Gunadarma, klik PRECHECK me-RELOAD halaman (bukan AJAX). Tanpa
+  // marker ini, background re-inject content.js → handleSolve fresh → soal belum
+  // dinilai (precheck tak menilai) → findUnansweredQuestion pilih lagi → kirim ulang
+  // ke Gemini → LOOP. Marker bertahan lintas reload; saat handleSolve mulai, bila
+  // marker cocok & hasil precheck sudah ada → resume ke CHECK, bukan solve ulang.
+  await chrome.storage.local.set({ precheckPending: { queId: queEl.id || '', ts: Date.now() } });
+
   status('🔍 Menjalankan PRECHECK...');
   fireClick(precheckBtn);
 
@@ -621,6 +745,7 @@ async function moodlePrecheckFlow(queEl, status) {
 
   if (!resultEl) {
     status('⚠️ Hasil PRECHECK tidak muncul. Langsung CHECK...');
+    await chrome.storage.local.remove(['precheckPending']);
     return moodleCheckAndNavigate(queEl, status);
   }
 
@@ -633,54 +758,19 @@ async function moodlePrecheckFlow(queEl, status) {
   scrollToResultElement(freshResultEl, queEl, true);
   await sleep(500); // Tunggu instant scroll selesai
 
-  // Parse hasil PRECHECK
-  const resultText = (resultEl.innerText || resultEl.textContent || '').trim();
-  const isPassed = parsePrecheckResult(resultText, resultEl);
+  // Hasil precheck sudah tertangani inline (halaman TIDAK reload pada path ini) →
+  // bersihkan marker resume agar tidak salah-trigger di navigasi berikutnya.
+  await chrome.storage.local.remove(['precheckPending']);
 
-  if (isPassed) {
-    status('✅ PRECHECK berhasil! Menjalankan CHECK...');
-    await sleep(800);
-    return moodleCheckAndNavigate(queEl, status);
-  }
-
-  // PRECHECK gagal — cek retry count
-  const d = await storageGet(['precheckRetryCount']);
-  const retryCount = Number(d.precheckRetryCount ?? 0);
-
-  if (retryCount >= MAX_PRECHECK_RETRIES) {
-    status(`❌ PRECHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot agar Anda bisa koreksi manual.`);
-    // Scroll ke hasil error agar kode + tabel Got/Expected ter-capture di screenshot
-    const freshResultElErr = queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || resultEl;
-    scrollToResultElement(freshResultElErr, queEl, true);
-    await sleep(500);
-    await saveErrorScreenshot(queEl, resultText);
-    chrome.storage.local.set({ isBatching: false });
-    window.__flabAborted = true;
-    setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_LOG_REMOVE);
-    return;
-  }
-
-  // Retry: simpan error context & kirim ulang ke Gemini
-  const nextRetry = retryCount + 1;
-  const existingCode = getExistingCode(queEl);
-
-  status(`🔄 PRECHECK gagal. Retry ${nextRetry}/${MAX_PRECHECK_RETRIES}...`);
-
-  await chrome.storage.local.set({
-    precheckError: resultText.slice(0, 2500),
-    precheckCode: existingCode,
-    precheckRetryCount: nextRetry,
-  });
-
-  // Clear precheck result before retrying (agar tidak dibaca ulang)
-  clearPrecheckResult(queEl);
-
-  await sleep(PRECHECK_CLEAR_DELAY_MS);
-  if (!(await isStillBatching())) return;
-
-  // Re-trigger solve flow — Gemini akan lihat screenshot + error context
-  const sd = await storageGet(['ai', 'batchPrompt']);
-  handleSolve(sd.ai || 'gemini', sd.batchPrompt || '', true);
+  // PENTING: JANGAN klasifikasi teks/tabel precheck untuk pass/fail — markup hasil
+  // CodeRunner bergantung tema & sering memuat boilerplate ("must pass all tests...
+  // try again") bahkan saat LULUS, sehingga klasifikasi teks selalu bisa salah
+  // (sumber loop "PRECHECK gagal padahal benar"). Precheck cukup dijalankan untuk
+  // memberi konteks; penentu benar/salah adalah CHECK — badge .info .state resmi
+  // Moodle yang dibaca checkIfCorrect & punya retry-loop sendiri.
+  status('✅ PRECHECK selesai. Menjalankan CHECK (penilai resmi)...');
+  await sleep(800);
+  return moodleCheckAndNavigate(queEl, status);
 }
 
 // Tunggu precheck result muncul di DOM
@@ -703,8 +793,6 @@ async function waitForPrecheckResult(queEl, timeout = TIMEOUTS.PRECHECK_RESULT) 
   }
   return null;
 }
-
-// parsePrecheckResult dipindah ke ./grading.js
 
 // Clear precheck result from DOM so it doesn't interfere with next precheck
 // PENTING: Tidak hapus [id*="feedback"] atau .outcome global - terlalu agresif.
@@ -1080,10 +1168,10 @@ function startSnipTool(ai, prompt) {
   const style = document.createElement('style');
   style.id = 'flabai-snip-style';
   style.textContent = `
-    #flabai-snip{position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(0,0,0,.45);}
-    #_snip-hint{position:absolute;top:16px;left:50%;transform:translateX(-50%);background:#1a1a3a;color:#ccd;font-family:Inter,sans-serif;font-size:13px;padding:8px 20px;border-radius:999px;border:1px solid #6c63ff80;white-space:nowrap;box-shadow:0 4px 24px #0008;}
-    #_snip-cancel{color:#ff6b6b;cursor:pointer;font-weight:600;}
-    #_snip-box{position:fixed;display:none;border:2px solid #6c63ff;background:rgba(108,99,255,.12);pointer-events:none;}`;
+    #flabai-snip{position:fixed;inset:0;z-index:2147483647;cursor:crosshair;background:rgba(0,0,0,.35);}
+    #_snip-hint{position:absolute;top:16px;left:50%;transform:translateX(-50%);background:linear-gradient(180deg,rgba(255,255,255,0.82),rgba(255,255,255,0.62));backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);color:#1d1d1f;font-family:'Inter',-apple-system,sans-serif;font-size:13px;font-weight:500;padding:9px 18px;border-radius:100px;border:0.5px solid rgba(255,255,255,0.7);white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,0.18),inset 0 1px 0 rgba(255,255,255,0.9);}
+    #_snip-cancel{color:#FF3B30;cursor:pointer;font-weight:700;}
+    #_snip-box{position:fixed;display:none;border:2px solid #007AFF;background:rgba(0,122,255,.12);pointer-events:none;border-radius:6px;}`;
   document.head.appendChild(style);
 
   const overlay = document.createElement('div');

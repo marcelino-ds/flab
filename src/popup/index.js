@@ -11,7 +11,7 @@ const $ = id => document.getElementById(id);
 const SESSION_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'sessionStats',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
 ];
 
 // Deteksi Moodle dengan memeriksa penanda DOM di tab aktif (lintas-kampus, bukan

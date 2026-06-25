@@ -43,7 +43,7 @@ async function processPayload(payload, provider) {
 
   ui.stopBtn.addEventListener('click', () => {
     myAbort.v = true;
-    setGStatus('[Sistem] Dibatalkan paksa. Sinyal sinkron dikirim ke LMS.', 100, '#ff453a');
+    setGStatus('[Sistem] Dibatalkan paksa. Sinyal sinkron dikirim ke LMS.', 100, '#FF3B30');
     chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan LMS di tab sebelah
     setTimeout(() => ui.root.remove(), 3000);
   });
@@ -58,7 +58,7 @@ async function processPayload(payload, provider) {
   }, EDITOR_WAIT_MS);
 
   if (!inputEl) {
-    setGStatus('[Sistem] Gagal mengikat elemen editor teks Gemini UI.', 100, '#ff453a');
+    setGStatus('[Sistem] Gagal mengikat elemen editor teks Gemini UI.', 100, '#FF3B30');
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
@@ -101,7 +101,7 @@ async function processPayload(payload, provider) {
 
   const sent = clickSend(provider);
   if (!sent) {
-    setGStatus('[Error] Kegagalan menemukan elemen pemicu pengiriman.', 100, '#ff453a');
+    setGStatus('[Error] Kegagalan menemukan elemen pemicu pengiriman.', 100, '#FF3B30');
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
@@ -277,7 +277,7 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
       if (isAborted?.()) { finish(); return; }
       const elapsed = Date.now() - startedAt;
       if (elapsed >= TIMEOUT_MS) {
-        setGStatus('[Timeout] Batas waktu tunggu tercapai. Menginisiasi mode pemulihan otomatis via LMS...', 100, '#ff9f0a');
+        setGStatus('[Timeout] Batas waktu tunggu tercapai. Menginisiasi mode pemulihan otomatis via LMS...', 100, '#FF9500');
         chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
         finish();
         return;
@@ -474,22 +474,29 @@ function waitSendReady(provider, timeout = 4000) {
 function buildGeminiUI() {
   const root = document.createElement('div');
   root.id = '__flab-gem-ui';
+  // Light "liquid glass" — sibling tema popup & overlay Moodle. Frosted putih +
+  // hairline + inset sheen, teks gelap agar terbaca di atas UI Gemini/ChatGPT/Claude.
   Object.assign(root.style, {
     position: 'fixed', bottom: '20px', left: '20px',
-    background: 'rgba(20,20,22,0.92)', backdropFilter: 'blur(16px)',
-    border: '1px solid rgba(255,255,255,0.1)', borderRadius: '14px',
-    padding: '14px 18px', zIndex: '2147483647', color: '#fff',
-    fontFamily: 'Inter, -apple-system, sans-serif', fontSize: '12px', /* reduced from 13 */
-    boxShadow: '0 16px 48px rgba(0,0,0,0.7)', width: '310px', /* increased width to accommodate detailed logs */
+    background: 'linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(255,255,255,0.62) 100%)',
+    backdropFilter: 'blur(30px) saturate(180%)', WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+    border: '0.5px solid rgba(255,255,255,0.7)', borderRadius: '18px',
+    padding: '14px 16px', zIndex: '2147483647', color: '#1d1d1f',
+    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", fontSize: '12px',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.14), inset 0 1px 0 rgba(255,255,255,0.9), inset 0 -8px 16px -8px rgba(255,255,255,0.5)',
+    width: '310px', WebkitFontSmoothing: 'antialiased',
   });
   root.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-      <span style="font-weight:700;font-size:14px;color:#32d74b;text-shadow:0 0 10px rgba(50,215,75,0.35);">FLAB <span style="font-size:11px;color:#8E8E93">GEMINI INJECTOR</span></span>
-      <button id="_gem-stop" style="background:rgba(255,69,58,.15);border:1px solid #ff453a;border-radius:6px;color:#ff453a;padding:3px 9px;font-size:11px;font-weight:700;cursor:pointer;">BATALKAN</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:11px;gap:8px;">
+      <span style="display:flex;align-items:center;gap:7px;min-width:0;">
+        <span style="font-weight:700;font-size:14px;color:#1d1d1f;letter-spacing:-0.3px;">flab</span>
+        <span style="font-size:9.5px;color:#007AFF;background:rgba(0,122,255,0.12);border:0.5px solid rgba(255,255,255,0.6);padding:2px 7px;border-radius:100px;font-weight:700;letter-spacing:0.3px;text-transform:uppercase;">Injector</span>
+      </span>
+      <button id="_gem-stop" style="background:rgba(255,59,48,0.12);border:0.5px solid rgba(255,59,48,0.4);border-radius:8px;color:#FF3B30;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer;transition:all 0.2s;">Batalkan</button>
     </div>
-    <div id="_gem-status" style="color:#e5e5ea;font-size:11px;line-height:1.5;margin-bottom:10px;"><i>[Sistem] Menyiapkan environment injeksi...</i></div>
-    <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:5px;overflow:hidden;">
-      <div id="_gem-bar" style="background:linear-gradient(90deg,#0A84FF,#32d74b);height:100%;width:0%;transition:width .3s ease;"></div>
+    <div id="_gem-status" style="color:#1d1d1f;font-size:11px;line-height:1.5;margin-bottom:11px;font-weight:500;"><i style="color:rgba(60,60,67,0.6)">[Sistem] Menyiapkan environment injeksi...</i></div>
+    <div style="background:rgba(120,120,128,0.16);border-radius:100px;height:5px;overflow:hidden;box-shadow:inset 0 1px 2px rgba(0,0,0,0.06);">
+      <div id="_gem-bar" style="background:linear-gradient(90deg,#007AFF,#34C759);height:100%;width:0%;transition:width .3s cubic-bezier(0.32,0.72,0,1);"></div>
     </div>`;
   document.body.appendChild(root);
   return {

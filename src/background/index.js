@@ -9,7 +9,7 @@ import { solveViaApi } from '../shared/api-client.js';
 const STALE_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'sessionStats',
+  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
   'providerTabId', 'providerTabAi'
 ];
 
