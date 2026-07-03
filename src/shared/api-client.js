@@ -6,6 +6,7 @@
 // SPA per soal. Jalur tab tetap ada sebagai fallback gratis tanpa API key.
 
 import { buildApiSystemInstruction, buildAnswerRules, ANSWER_SHAPE } from './solve-contract.js';
+import { extractAnswerObject, normalizeAnswer as normalizeParsedAnswer } from './answer-parser.js';
 
 // Bentuk hasil yang dikembalikan ke pemanggil — identik dengan output jalur tab.
 // { jawaban: string|string[], index_pilihan: number }
@@ -19,25 +20,13 @@ function splitDataUrl(dataUrl) {
 
 // Normalisasi objek JSON model → bentuk { jawaban, index_pilihan } yang dipakai filler.
 function normalizeAnswer(obj) {
-  if (!obj || typeof obj !== 'object') return null;
-  const jawaban = Array.isArray(obj.jawaban) ? obj.jawaban : String(obj.jawaban ?? '').trim();
-  const index_pilihan = Number(obj.index_pilihan ?? 0);
-  const isEmpty = Array.isArray(jawaban) ? jawaban.length === 0 : !jawaban;
-  if (isEmpty) return null;
-  return { jawaban, index_pilihan };
+  return normalizeParsedAnswer(obj);
 }
 
-// Cari objek JSON pertama yang valid dalam teks bebas (jaga-jaga model membungkus
-// JSON dengan teks/markdown walau diminta JSON murni).
+// Cari objek JSON jawaban dalam teks bebas (jaga-jaga model membungkus JSON dengan
+// teks/markdown walau diminta JSON murni). Mengambil blok terakhir berisi `jawaban`.
 function parseJsonLoose(text) {
-  if (!text) return null;
-  try { return JSON.parse(text); } catch { /* lanjut ke ekstraksi */ }
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence) { try { return JSON.parse(fence[1].trim()); } catch { /* lanjut */ } }
-  const s = text.indexOf('{');
-  const e = text.lastIndexOf('}');
-  if (s !== -1 && e > s) { try { return JSON.parse(text.slice(s, e + 1)); } catch { /* gagal */ } }
-  return null;
+  return extractAnswerObject(text);
 }
 
 // Payload bergambar: 'solve_image' (komposit soal) & 'image' (screenshot/snip).
@@ -56,7 +45,7 @@ function buildUserPrompt(payload) {
 }
 
 // ── Gemini (Google AI Studio / Generative Language API) ─────────────────────────
-async function callGemini(apiCfg, key, payload) {
+async function callGemini(apiCfg, key, payload, opts = {}) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${apiCfg.model}:generateContent?key=${encodeURIComponent(key)}`;
   const parts = [{ text: buildUserPrompt(payload) }];
   if (isImagePayload(payload)) {
@@ -69,7 +58,7 @@ async function callGemini(apiCfg, key, payload) {
     generationConfig: { temperature: 0, responseMimeType: 'application/json' },
   };
   const res = await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: opts.signal,
   });
   if (!res.ok) throw new Error(`Gemini API ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
@@ -78,7 +67,7 @@ async function callGemini(apiCfg, key, payload) {
 }
 
 // ── OpenAI (ChatGPT) ────────────────────────────────────────────────────────────
-async function callOpenAI(apiCfg, key, payload) {
+async function callOpenAI(apiCfg, key, payload, opts = {}) {
   const userContent = isImagePayload(payload)
     ? [{ type: 'text', text: buildUserPrompt(payload) }, { type: 'image_url', image_url: { url: payload.dataUrl } }]
     : buildUserPrompt(payload);
@@ -95,6 +84,7 @@ async function callOpenAI(apiCfg, key, payload) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
     body: JSON.stringify(body),
+    signal: opts.signal,
   });
   if (!res.ok) throw new Error(`OpenAI API ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
@@ -102,7 +92,7 @@ async function callOpenAI(apiCfg, key, payload) {
 }
 
 // ── Anthropic (Claude) ──────────────────────────────────────────────────────────
-async function callAnthropic(apiCfg, key, payload) {
+async function callAnthropic(apiCfg, key, payload, opts = {}) {
   const content = [{ type: 'text', text: buildUserPrompt(payload) }];
   if (isImagePayload(payload)) {
     const img = splitDataUrl(payload.dataUrl);
@@ -128,6 +118,7 @@ async function callAnthropic(apiCfg, key, payload) {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify(body),
+    signal: opts.signal,
   });
   if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
@@ -139,12 +130,12 @@ async function callAnthropic(apiCfg, key, payload) {
 const CALLERS = { gemini: callGemini, openai: callOpenAI, anthropic: callAnthropic };
 
 // Panggil provider via API. Mengembalikan { jawaban, index_pilihan } atau melempar.
-export async function solveViaApi(provider, key, payload) {
+export async function solveViaApi(provider, key, payload, opts = {}) {
   const apiCfg = provider?.api;
   if (!apiCfg) throw new Error(`Provider ${provider?.id} tak punya konfigurasi API`);
   const caller = CALLERS[apiCfg.kind];
   if (!caller) throw new Error(`Jenis API tak dikenal: ${apiCfg.kind}`);
-  const obj = await caller(apiCfg, key, payload);
+  const obj = await caller(apiCfg, key, payload, opts);
   const norm = normalizeAnswer(obj);
   if (!norm) throw new Error('Respons API tak berisi jawaban valid');
   return norm;

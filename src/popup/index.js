@@ -2,6 +2,7 @@
 'use strict';
 
 import { escapeHtml } from '../shared/util.js';
+import { makeId } from '../shared/id.js';
 import { PROVIDERS, DEFAULT_PROVIDER } from '../shared/providers.js';
 
 const $ = id => document.getElementById(id);
@@ -12,6 +13,7 @@ const SESSION_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
   'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
+  'sessionId', 'activeRequestId',
 ];
 
 // Deteksi Moodle dengan memeriksa penanda DOM di tab aktif (lintas-kampus, bukan
@@ -178,8 +180,10 @@ $('sendBtn').addEventListener('click', async () => {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
 
     // Set state sesi baru
+    const sessionId = makeId('sess');
     await chrome.storage.local.set({
       isBatching: true,
+      sessionId,
       activeMode: 'solve',
       batchTabId: tab.id,
       batchPrompt: prompt,
@@ -188,6 +192,7 @@ $('sendBtn').addEventListener('click', async () => {
 
     chrome.tabs.sendMessage(tab.id, {
       action : 'START',
+      sessionId,
       ai,
       mode   : 'solve',
       prompt,

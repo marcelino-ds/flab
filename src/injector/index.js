@@ -2,7 +2,7 @@
 'use strict';
 
 import { escapeHtml, sleep } from '../shared/util.js';
-import { matchClosingBrace } from './json-extract.js';
+import { parseAnswerFromText } from '../shared/answer-parser.js';
 import { getProviderByHost } from '../shared/providers.js';
 import { buildAutoSolveRules } from '../shared/solve-contract.js';
 
@@ -22,10 +22,27 @@ const BUBBLE_SELECTOR = 'model-response, .model-response-text, [data-message-aut
 // sendiri, dan __activeAbort selalu menunjuk token yang sedang berjalan.
 let __activeAbort = { v: false };
 
+
+function reportProviderFailure(payload, provider, stage) {
+  try {
+    chrome.runtime.sendMessage({
+      action: 'PROVIDER_SETUP_FAILED',
+      sessionId: payload?.sessionId,
+      requestId: payload?.requestId,
+      providerId: provider?.id,
+      providerLabel: provider?.label,
+      stage,
+    });
+  } catch { /* context reload */ }
+}
+
 // Proses SATU payload di tab provider: bangun UI, tunggu editor, inject, kirim,
 // amati respons. Dipanggil saat tab pertama kali dibuka (payload dari storage) dan
 // tiap kali background mengirim NEW_PAYLOAD ke tab yang sama (soal berikutnya).
 async function processPayload(payload, provider) {
+  // Supersede any in-flight provider work before accepting a new payload. Tanpa ini,
+  // tab persisten bisa mengirim soal lama setelah NEW_PAYLOAD berikutnya masuk.
+  if (__activeAbort) __activeAbort.v = true;
   const myAbort = { v: false };
   __activeAbort = myAbort;
 
@@ -44,7 +61,7 @@ async function processPayload(payload, provider) {
   ui.stopBtn.addEventListener('click', () => {
     myAbort.v = true;
     setGStatus('[Sistem] Dibatalkan paksa. Sinyal sinkron dikirim ke LMS.', 100, '#FF3B30');
-    chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan LMS di tab sebelah
+    chrome.runtime.sendMessage({ action: 'STOP_PROCESS', sessionId: payload.sessionId, requestId: payload.requestId }); // Matikan LMS di tab sebelah
     setTimeout(() => ui.root.remove(), 3000);
   });
 
@@ -58,7 +75,8 @@ async function processPayload(payload, provider) {
   }, EDITOR_WAIT_MS);
 
   if (!inputEl) {
-    setGStatus('[Sistem] Gagal mengikat elemen editor teks Gemini UI.', 100, '#FF3B30');
+    setGStatus(`[Sistem] Gagal mengikat elemen editor teks ${provider.label} UI.`, 100, '#FF3B30');
+    reportProviderFailure(payload, provider, 'editor_not_found');
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
@@ -71,20 +89,23 @@ async function processPayload(payload, provider) {
   if (payload.type === 'solve_text') {
     setGStatus('[Injeksi] Mentransmisi prompt tekstual dengan aturan penyelesaian...', 50);
     const textPrompt = (payload.prompt || '') + '\n\nBerikut soalnya:\n\n' + payload.text + '\n' + autoSolveRules;
-    await injectText(inputEl, textPrompt);
+    await injectText(inputEl, textPrompt, isAborted);
   } else if (payload.type === 'text') {
     setGStatus('[Injeksi] Memasukkan string kontekstual bebas tanpa aturan spesifik...', 50);
     const textPrompt = (payload.prompt ? payload.prompt + '\n\nBerikut soalnya:\n\n' : 'Jawab soal berikut secara lengkap:\n\n') + payload.text;
-    await injectText(inputEl, textPrompt);
+    await injectText(inputEl, textPrompt, isAborted);
   } else if (payload.type === 'batch_images') {
     setGStatus(`[Aliran] Menyiapkan unggahan massal untuk ${payload.dataUrls.length} blob grafis...`, 20);
-    await injectMultipleImages(inputEl, payload.dataUrls, payload.prompt, setGStatus, isAborted);
+    const ok = await injectMultipleImages(inputEl, payload.dataUrls, payload.prompt, setGStatus, isAborted, provider);
+    if (ok === false) { reportProviderFailure(payload, provider, 'prompt_not_found'); return; }
   } else if (payload.type === 'solve_image') {
     setGStatus('[Operasi] Mode Ekstraksi Gambar & Parsing JSON otomatis...', 30);
-    await injectImage(inputEl, payload.dataUrl, (payload.prompt || '') + autoSolveRules, setGStatus, isAborted);
+    const ok = await injectImage(inputEl, payload.dataUrl, (payload.prompt || '') + autoSolveRules, setGStatus, isAborted, provider);
+    if (ok === false) { reportProviderFailure(payload, provider, 'prompt_not_found'); return; }
   } else {
     setGStatus('[Operasi] Menginisiasi transmisi blob gambar tunggal...', 30);
-    await injectImage(inputEl, payload.dataUrl, payload.prompt || '', setGStatus, isAborted);
+    const ok = await injectImage(inputEl, payload.dataUrl, payload.prompt || '', setGStatus, isAborted, provider);
+    if (ok === false) { reportProviderFailure(payload, provider, 'prompt_not_found'); return; }
   }
 
   if (myAbort.v) return;
@@ -102,6 +123,7 @@ async function processPayload(payload, provider) {
   const sent = clickSend(provider);
   if (!sent) {
     setGStatus('[Error] Kegagalan menemukan elemen pemicu pengiriman.', 100, '#FF3B30');
+    reportProviderFailure(payload, provider, 'send_not_found');
     setTimeout(() => ui.root.remove(), 5000);
     return;
   }
@@ -110,14 +132,25 @@ async function processPayload(payload, provider) {
   // belakang menyelesaikan jawaban (observer tahan throttle). Beri jeda kecil agar
   // event submit Gemini benar-benar terproses sebelum tab kehilangan fokus.
   await sleep(400);
-  try { chrome.runtime.sendMessage({ action: 'REFOCUS_LMS' }); } catch { /* context reload */ }
+  try { chrome.runtime.sendMessage({ action: 'REFOCUS_LMS', sessionId: payload.sessionId, requestId: payload.requestId }); } catch { /* context reload */ }
 
   setGStatus('[Agen] Menggantung status, menunggu perakitan struktur JSON dan resolusi AI...', 90);
   const needsJsonResponse = payload.type === 'solve_image' || payload.type === 'solve_text';
   if (needsJsonResponse) {
-    await observeAndExtractJson(setGStatus, isAborted, initialBubbleCount, provider.bubbleSelector);
+    await observeAndExtractJson(setGStatus, isAborted, initialBubbleCount, provider.bubbleSelector, payload);
   } else {
     setTimeout(() => ui.root.remove(), 4000);
+  }
+}
+
+function samePayloadIdentity(a, b) {
+  return !!a && !!b && a.sessionId === b.sessionId && a.requestId === b.requestId;
+}
+
+async function removePayloadIfCurrent(payload, pendingTabId) {
+  const cur = await chrome.storage.local.get(['flabPayload', 'pendingTabId']);
+  if (samePayloadIdentity(cur.flabPayload, payload) && cur.pendingTabId === pendingTabId) {
+    await chrome.storage.local.remove(['flabPayload', 'pendingTabId']);
   }
 }
 
@@ -143,7 +176,17 @@ async function consumePayloadFromStorage() {
   }
   if (session.pendingTabId !== myTabId)      { console.log('[FLAB] Tab ID mismatch – skip.'); return; }
 
-  await chrome.storage.local.remove(['flabPayload', 'pendingTabId']);
+  const current = await chrome.storage.local.get(['isBatching', 'sessionId', 'activeRequestId']);
+  const isCurrentPayload = current.isBatching &&
+    current.sessionId === payload.sessionId &&
+    current.activeRequestId === payload.requestId;
+  if (!isCurrentPayload) {
+    console.log('[FLAB] Payload stale – skip.');
+    await removePayloadIfCurrent(payload, session.pendingTabId);
+    return;
+  }
+
+  await removePayloadIfCurrent(payload, session.pendingTabId);
   console.log('[FLAB] Payload received, type:', payload.type);
   await processPayload(payload, provider);
 }
@@ -155,6 +198,7 @@ if (!window.__flabInjectorReady) {
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (sender?.id && sender.id !== chrome.runtime.id) return;
     if (msg.action === 'NEW_PAYLOAD') {
+      __activeAbort.v = true;
       // ACK sinkron WAJIB: background mengirim NEW_PAYLOAD dengan callback dan
       // menganggap lastError ("port closed") sebagai tab mati → akan menutup tab ini
       // & membuka tab baru tiap soal. Balas dulu agar tab persisten dipakai ulang.
@@ -176,7 +220,7 @@ consumePayloadFromStorage();
 // Chrome (bisa 1×/menit) → poll mandek → ekstensi terlihat "freeze" saat user pindah
 // tab. MutationObserver bereaksi tiap DOM streaming berubah & tidak kena throttle.
 // Timeout pakai wall-clock (Date.now), bukan hitungan tick, agar 4 menit tetap akurat.
-async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1, bubbleSelector = BUBBLE_SELECTOR) {
+async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount = -1, bubbleSelector = BUBBLE_SELECTOR, payload = {}) {
   const existingBubbleCount = initialBubbleCount !== -1 ? initialBubbleCount : document.querySelectorAll(bubbleSelector).length;
   const startedAt = Date.now();
   const TIMEOUT_MS = MAX_TICKS * TICK_INTERVAL_MS; // jaga durasi total sama (≈4 menit)
@@ -209,65 +253,21 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
 
       if (text.includes('[TEKS_JAWABAN]') || text.includes('[NOMOR]')) return false;
 
-      const jPos = text.lastIndexOf('"jawaban"');
-      if (jPos === -1) return false;
+      const answer = parseAnswerFromText(text);
+      if (!answer) return false;
 
-      const s = text.lastIndexOf('{', jPos);
-      if (s === -1) return false;
-
-      // Balanced brace-matching dari `s`, sadar string & escape. lastIndexOf('}')
-      // global salah untuk jawaban KODING (penuh '{}') atau teks setelah blok JSON.
-      const e = matchClosingBrace(text, s);
-      if (e === -1 || e <= s) return false;
-
-      const block = text.slice(s, e + 1);
-
-      let safe = block
-        .replace(/[\u201C\u201D\u201F]/g, '"')
-        .replace(/[\u2018\u2019]/g, "'");
-
-      let jawaban = '', index_pilihan = 0, ok = false;
-      try {
-         let obj;
-         try {
-             obj = JSON.parse(safe);
-         } catch(err) {
-             const matchArr = safe.match(/"jawaban"\s*:\s*\[([\s\S]*?)\]\s*(?:,\s*"index_pilihan"|\})/i);
-             const matchStr = safe.match(/"jawaban"\s*:\s*"([\s\S]*?)"\s*(?:,\s*"index_pilihan"|\})/i);
-             const matchIdx = safe.match(/"index_pilihan"\s*:\s*(\d+)/i);
-             
-             if (matchArr) {
-                obj = {
-                   jawaban: [...matchArr[1].matchAll(/"([\s\S]*?)"/g)].map(m => m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')),
-                   index_pilihan: matchIdx ? parseInt(matchIdx[1], 10) : 0
-                };
-             } else if (matchStr) {
-                obj = {
-                   jawaban: matchStr[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\'),
-                   index_pilihan: matchIdx ? parseInt(matchIdx[1], 10) : 0
-                };
-             } else {
-                throw new Error("Fallback failed");
-             }
-         }
-
-         jawaban = Array.isArray(obj.jawaban) ? obj.jawaban : String(obj.jawaban ?? '').trim();
-         index_pilihan = Number(obj.index_pilihan ?? 0);
-         ok = true;
-      } catch (e2) {
-         // Silently fail, loop again until parsing succeeds
-      }
-
-      const isNullish = typeof jawaban === 'string' && (jawaban.toLowerCase() === 'null' || jawaban.toLowerCase() === 'undefined');
-      if (ok && jawaban && !isNullish) {
-        const displayJaw = Array.isArray(jawaban) ? jawaban.join(', ') : jawaban;
-        const preview = displayJaw.length > 40 ? '(jawaban multiselect / format panjang)' : displayJaw;
-        setGStatus(`[Kompilasi] Blok JSON berhasil diesktrak: <b>${escapeHtml(preview)}</b>${index_pilihan ? ` · opsi ke-${index_pilihan}` : ''}`, 100);
-        chrome.runtime.sendMessage({ action: 'SOLVER_JSON_RESULT', data: { jawaban, index_pilihan } });
-        finish();
-        return true;
-      }
-      return false;
+      const { jawaban, index_pilihan } = answer;
+      const displayJaw = Array.isArray(jawaban) ? jawaban.join(', ') : jawaban;
+      const preview = displayJaw.length > 40 ? '(jawaban multiselect / format panjang)' : displayJaw;
+      setGStatus(`[Kompilasi] Blok JSON berhasil diesktrak: <b>${escapeHtml(preview)}</b>${index_pilihan ? ` · opsi ke-${index_pilihan}` : ''}`, 100);
+      chrome.runtime.sendMessage({
+        action: 'SOLVER_JSON_RESULT',
+        sessionId: payload.sessionId,
+        requestId: payload.requestId,
+        data: { jawaban, index_pilihan },
+      });
+      finish();
+      return true;
     };
 
     // Ticker lambat (2 dtk) HANYA untuk: update label progres & cek timeout wall-clock.
@@ -278,7 +278,7 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
       const elapsed = Date.now() - startedAt;
       if (elapsed >= TIMEOUT_MS) {
         setGStatus('[Timeout] Batas waktu tunggu tercapai. Menginisiasi mode pemulihan otomatis via LMS...', 100, '#FF9500');
-        chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT' });
+        chrome.runtime.sendMessage({ action: 'SOLVER_TIMEOUT', sessionId: payload.sessionId, requestId: payload.requestId });
         finish();
         return;
       }
@@ -306,32 +306,53 @@ async function observeAndExtractJson(setGStatus, isAborted, initialBubbleCount =
 }
 
 // ── Text injection (3-method fallback) ────────────────────────────────────────
-async function injectText(el, text) {
+async function injectText(el, text, isAborted = () => false) {
+  if (isAborted?.()) return false;
   el.focus();
   await sleep(200);
+  if (isAborted?.()) return false;
+
+  if (el.matches?.('textarea,input')) {
+    try {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+      if (isAborted?.()) return false;
+      if (setter) setter.call(el, text); else el.value = text;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      await sleep(TEXT_INJECT_DELAY_MS);
+      if (isAborted?.()) return false;
+      return (el.value || '').trim().length > 0;
+    } catch (e) { console.debug('[FLAB] injectText textarea/input gagal:', e); }
+  }
 
   // Method 1: Paste event
   try {
     const dt = new DataTransfer();
     dt.setData('text/plain', text);
+    if (isAborted?.()) return false;
     el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true }));
     await sleep(TEXT_INJECT_DELAY_MS);
+    if (isAborted?.()) return false;
     if (el.textContent.trim().length > 0) return true;
   } catch (e) { console.debug('[FLAB] injectText method 1 (paste) gagal:', e); }
 
   // Method 2: Input event
   try {
+    if (isAborted?.()) return false;
     el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
     await sleep(TEXT_INJECT_DELAY_MS);
+    if (isAborted?.()) return false;
     if (el.textContent.trim().length > 0) return true;
   } catch (e) { console.debug('[FLAB] injectText method 2 (input event) gagal:', e); }
 
   // Method 3: Direct DOM (last resort)
   try {
+    if (isAborted?.()) return false;
     el.textContent = text;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
+    return !isAborted?.();
   } catch (e) { console.debug('[FLAB] injectText method 3 (direct DOM) gagal:', e); }
 
   console.warn('[FLAB] All text-inject methods failed.');
@@ -339,7 +360,7 @@ async function injectText(el, text) {
 }
 
 // ── Single image injection ─────────────────────────────────────────────────────
-async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, isAborted = () => false) {
+async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, isAborted = () => false, provider = null) {
   const blob = dataURLtoBlob(dataUrl);
   const ext  = blob.type === 'image/jpeg' ? 'jpg' : 'png';
   const dt   = new DataTransfer();
@@ -353,6 +374,7 @@ async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, 
     FILE_INPUT_WAIT_MS
   );
 
+  if (isAborted()) return false;
   if (fileInput) {
     setGStatus('Mengunggah gambar via file input…', 60);
     fileInput.files = dt.files;
@@ -367,17 +389,15 @@ async function injectImage(inputEl, dataUrl, promptText, setGStatus = () => {}, 
   if (isAborted()) return;
   if (promptText) {
     setGStatus('Menambahkan prompt…', 80);
-    const freshEl = await waitFor(
-      () => document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
-            document.querySelector('.ql-editor[contenteditable="true"]'),
-      PROMPT_WAIT_MS
-    );
-    if (freshEl) await injectText(freshEl, '\n' + promptText);
+    const freshEl = await waitFor(() => findPromptEditor(provider, inputEl), PROMPT_WAIT_MS);
+    if (!freshEl) return false;
+    const ok = await injectText(freshEl, '\n' + promptText, isAborted);
+    if (!ok) return false;
   }
 }
 
 // ── Bulk image injection ───────────────────────────────────────────────────────
-async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, isAborted) {
+async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, isAborted, provider = null) {
   const dt = new DataTransfer();
 
   for (let i = 0; i < dataUrls.length; i++) {
@@ -396,6 +416,7 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
     FILE_INPUT_WAIT_MS
   );
 
+  if (isAborted?.()) return false;
   if (fileInput) {
     fileInput.files = dt.files;
     fileInput.dispatchEvent(new Event('change', { bubbles: true }));
@@ -408,12 +429,10 @@ async function injectMultipleImages(inputEl, dataUrls, promptText, setGStatus, i
   if (isAborted?.()) return;
   if (promptText) {
     setGStatus('Menambahkan prompt akhir…', 80);
-    const freshEl = await waitFor(
-      () => document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
-            document.querySelector('.ql-editor[contenteditable="true"]'),
-      PROMPT_WAIT_MS
-    );
-    if (freshEl) await injectText(freshEl, '\n' + promptText);
+    const freshEl = await waitFor(() => findPromptEditor(provider, inputEl), PROMPT_WAIT_MS);
+    if (!freshEl) return false;
+    const ok = await injectText(freshEl, '\n' + promptText, isAborted);
+    if (!ok) return false;
   }
 }
 
@@ -510,6 +529,17 @@ function buildGeminiUI() {
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 // matchClosingBrace dipindah ke ./json-extract.js
+
+function findPromptEditor(provider, fallbackEl) {
+  if (fallbackEl?.isConnected) return fallbackEl;
+  for (const sel of (provider?.editorSelectors || [])) {
+    const el = document.querySelector(sel);
+    if (el) return el;
+  }
+  return document.querySelector('rich-textarea .ql-editor[contenteditable="true"]') ||
+    document.querySelector('.ql-editor[contenteditable="true"]') ||
+    document.querySelector('textarea,input,div[contenteditable="true"]');
+}
 
 function dataURLtoBlob(dataUrl) {
   if (!dataUrl?.includes(',')) return new Blob([], { type: 'image/png' });

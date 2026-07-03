@@ -13,14 +13,15 @@ export function getExistingCode(queEl) {
   if (editor) {
     try { return editor.getValue(); } catch { /**/ }
   }
-  // Method 2: Read from Ace gutter (visible lines)
+  // Method 2: Hidden textarea (Moodle CodeRunner syncs to this). Lebih lengkap
+  // daripada .ace_line yang hanya baris terlihat dan bisa memotong template.
+  const textarea = queEl?.querySelector('textarea[name*="answer"]') || queEl?.querySelector('textarea');
+  if (textarea) return textarea.value || '';
+  // Method 3: Read from Ace visible lines (last fallback)
   const aceLines = queEl?.querySelectorAll('.ace_line');
   if (aceLines && aceLines.length > 0) {
     return [...aceLines].map(l => l.textContent).join('\n');
   }
-  // Method 3: Hidden textarea (Moodle CodeRunner syncs to this)
-  const textarea = queEl?.querySelector('textarea[name*="answer"]') || queEl?.querySelector('textarea');
-  if (textarea) return textarea.value || '';
   return '';
 }
 

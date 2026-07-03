@@ -1,6 +1,31 @@
 // Penentuan benar/salah hasil CHECK Moodle. Fungsi murni baca DOM.
 // Konservatif: bila tidak yakin, kembalikan null agar tidak salah klaim.
 
+function textOf(el) {
+  return (el?.innerText || el?.textContent || '').trim();
+}
+
+function hasGradeValue(text) {
+  return /(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/.test(text) ||
+    /(\d+(?:\.\d+)?)\s*out\s*of\s*(\d+(?:\.\d+)?)/i.test(text);
+}
+
+export function officialGradeSignature(queEl) {
+  if (!queEl) return '';
+  const cl = queEl.classList;
+  const classSig = ['correct', 'incorrect', 'partiallycorrect'].filter(c => cl.contains(c)).join('|');
+  const stateText = textOf(queEl.querySelector('.info .state, .state')).toLowerCase();
+  const officialState = stateText && !/not\s*yet\s*answered|belum\s*dijawab/.test(stateText) &&
+    /correct|incorrect|benar|salah/.test(stateText) ? stateText : '';
+  const gradeText = textOf(queEl.querySelector('.grade, .mark'));
+  const officialGrade = hasGradeValue(gradeText) ? gradeText : '';
+  return [classSig, officialState, officialGrade].filter(Boolean).join('::');
+}
+
+export function hasOfficialGradeSignal(queEl) {
+  return !!officialGradeSignature(queEl);
+}
+
 // Tentukan benar/salah setelah CHECK dari feedback Moodle.
 // Return true (benar) / false (salah) / null (tidak diketahui).
 export function checkIfCorrect(queEl) {
@@ -15,39 +40,27 @@ export function checkIfCorrect(queEl) {
   // `.que` tak diberi kelas (kasus iLab Gunadarma). "Not yet answered" → belum
   // dinilai (null), bukan benar/salah.
   const stateEl = queEl.querySelector('.info .state, .state');
-  const stateText = (stateEl?.innerText || stateEl?.textContent || '').toLowerCase();
+  const stateText = textOf(stateEl).toLowerCase();
   if (stateText) {
     if (/not\s*yet\s*answered|belum\s*dijawab/.test(stateText)) return null;
     if (/partially\s*correct|sebagian\s*benar/.test(stateText)) return false;
-    if (/incorrect|\bsalah\b/.test(stateText)) return false;
+    if (/incorrect|tidak\s+benar|\bsalah\b/.test(stateText)) return false;
     if (/\bcorrect\b|\bbenar\b/.test(stateText)) return true;
   }
 
-  // Tabel hasil CodeRunner: deteksi kegagalan eksplisit (kompilasi gagal, run
-  // error, "must pass all tests... try again", baris bertanda gagal/✗).
-  const results = queEl.querySelector(
-    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, table.coderunner_test_results'
-  );
-  if (results) {
-    const rt = (results.innerText || results.textContent || '').toLowerCase();
-    if (/try\s*again|must\s*pass\s*all\s*tests|run\s*error|compil|kompilasi\s*gagal|pengujian\s*dibatalkan|\bfailed\b|\bwrong\b|✗|✘/.test(rt)) {
-      return false;
-    }
-    if (/passed\s*all\s*tests|all\s*tests\s*passed|semua\s*(tes|test).*lulus/.test(rt)) {
-      return true;
-    }
-  }
+  // Jangan jadikan tabel CodeRunner/precheck sebagai bukti resmi CHECK:
+  // tabel itu bisa stale dari PRECHECK dan tidak selalu mengubah status Moodle.
 
   const feedback = queEl.querySelector('.outcome, .feedback');
   if (feedback) {
-    const text = feedback.innerText?.toLowerCase() || '';
-    if (/try\s*again|must\s*pass\s*all\s*tests|incorrect|\bsalah\b/.test(text)) return false;
+    const text = textOf(feedback).toLowerCase();
+    if (/try\s*again|must\s*pass\s*all\s*tests|incorrect|tidak\s+benar|\bsalah\b/.test(text)) return false;
     if (/\bcorrect\b|\bbenar\b/.test(text)) return true;
   }
 
   const grade = queEl.querySelector('.grade, .mark');
   if (grade) {
-    const text = grade.innerText || '';
+    const text = textOf(grade);
     const match = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/) ||
       text.match(/(\d+(?:\.\d+)?)\s*out\s*of\s*(\d+(?:\.\d+)?)/i);
     if (match) {
