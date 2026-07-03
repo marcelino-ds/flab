@@ -16,7 +16,7 @@ export function isQuestionCorrect(q) {
   if (cl.contains('correct')) return true;
   const t = getStateText(q);
   if (!t || /not\s*yet\s*answered|belum\s*dijawab/.test(t)) return false;
-  if (/incorrect|partially\s*correct|\bsalah\b|sebagian\s*benar/.test(t)) return false;
+  if (/incorrect|partially\s*correct|tidak\s+benar|\bsalah\b|sebagian\s*benar/.test(t)) return false;
   return /\bcorrect\b|\bbenar\b/.test(t);
 }
 
@@ -27,7 +27,7 @@ export function isQuestionIncorrect(q) {
   if (cl.contains('correct')) return false;
   const t = getStateText(q);
   if (!t || /not\s*yet\s*answered|belum\s*dijawab/.test(t)) return false;
-  return /incorrect|partially\s*correct|\bsalah\b|sebagian\s*benar/.test(t);
+  return /incorrect|partially\s*correct|tidak\s+benar|\bsalah\b|sebagian\s*benar/.test(t);
 }
 
 // Sudah dinilai (benar ATAU salah)? Dipakai untuk membedakan dari "belum dijawab".
@@ -118,35 +118,31 @@ export function buildGapFillTemplate(queEl, inputs) {
 }
 
 
-// Find button by keywords inside a question element or globally
+const FINAL_SUBMIT_RE = /finishattempt|submit\s+all|kirim\s+semua|selesai|finish/i;
+
+function isVisibleButton(btn) {
+  return btn && (btn.offsetParent !== null || btn.type === 'submit');
+}
+
+function buttonText(btn) {
+  return (btn.innerText || btn.value || btn.name || btn.id || '').toLowerCase();
+}
+
+// Find button by keywords inside the current question only. Jangan fallback ke
+// `.submitbtns` global: di halaman quiz itu sering tombol final submit / finish.
 export function findButton(queEl, keywords, excludeKeywords = []) {
-  // First: cari di dalam question element
-  // Note: .im-controls is already inside queEl, so a single querySelectorAll covers it.
+  if (!queEl) return null;
   const allBtns = [...queEl.querySelectorAll('button, input[type="button"], input[type="submit"]')];
 
   for (const btn of allBtns) {
-    const txt = (btn.innerText || btn.value || btn.name || '').toLowerCase();
+    const txt = buttonText(btn);
     const matchesKeyword = keywords.some(k => txt.includes(k));
     const excluded = excludeKeywords.some(ex => txt.includes(ex));
+    const finalSubmit = FINAL_SUBMIT_RE.test(txt);
 
     // Khusus untuk Check vs Precheck: jika mencari 'check' tapi ini 'precheck', harus di-skip.
-    if (matchesKeyword && !excluded && btn.offsetParent !== null) {
+    if (matchesKeyword && !excluded && !finalSubmit && isVisibleButton(btn)) {
       // Pastikan kalau cuma nyari 'check', nggak salah klik 'precheck'
-      if (keywords.includes('check') && !keywords.includes('precheck') && txt.includes('precheck')) {
-        continue;
-      }
-      return btn;
-    }
-  }
-
-  // Fallback: cari di .submitbtns global
-  const submitBtns = document.querySelectorAll('.submitbtns button, .submitbtns input[type="submit"]');
-  for (const btn of submitBtns) {
-    const txt = (btn.innerText || btn.value || btn.name || '').toLowerCase();
-    const matchesKeyword = keywords.some(k => txt.includes(k));
-    const excluded = excludeKeywords.some(ex => txt.includes(ex));
-
-    if (matchesKeyword && !excluded) {
       if (keywords.includes('check') && !keywords.includes('precheck') && txt.includes('precheck')) {
         continue;
       }

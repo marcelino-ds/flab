@@ -83,6 +83,33 @@ describe('moodleFillMultichoice — multi select (checkbox)', () => {
     expect(radios[1].checked).toBe(false);
     expect(radios[2].checked).toBe(true);
   });
+
+  it('hapus checkbox stale yang tidak ada di jawaban retry', () => {
+    const { que, radios } = mc(['HTML', 'CSS', 'JS'], 'checkbox');
+    radios[0].checked = true;
+    radios[1].checked = true;
+    expect(fill(que, ['JS'], 0)).toBe(true);
+    expect(radios[0].checked).toBe(false);
+    expect(radios[1].checked).toBe(false);
+    expect(radios[2].checked).toBe(true);
+  });
+
+  it('berhasil saat checkbox yang diinginkan sudah persis tercentang', () => {
+    const { que, radios } = mc(['HTML', 'CSS', 'JS'], 'checkbox');
+    radios[0].checked = true;
+    radios[2].checked = true;
+    expect(fill(que, ['HTML', 'JS'], 0)).toBe(true);
+    expect(radios[0].checked).toBe(true);
+    expect(radios[1].checked).toBe(false);
+    expect(radios[2].checked).toBe(true);
+  });
+
+  it('gagal bila ada jawaban array yang tidak cocok ke opsi', () => {
+    const { que, radios } = mc(['HTML', 'CSS', 'JS'], 'checkbox');
+    radios[1].checked = true;
+    expect(fill(que, ['HTML', 'JavaScript'], 0)).toBe(false);
+    expect(radios.some(r => r.checked)).toBe(false);
+  });
 });
 
 describe('moodleFillMatch — soal menjodohkan', () => {

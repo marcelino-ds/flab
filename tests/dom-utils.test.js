@@ -45,6 +45,16 @@ describe('findButton — keyword match + precheck/check disambiguation', () => {
     const q = que('<button>Batal</button>');
     expect(findButton(q, ['check'])).toBeNull();
   });
+
+  it('tidak fallback ke tombol final submit global', () => {
+    const q = que('<div class="answer"></div>');
+    const global = document.createElement('div');
+    global.className = 'submitbtns';
+    global.innerHTML = '<input type="submit" name="finishattempt" value="Submit all and finish">';
+    document.body.appendChild(global);
+    expect(findButton(q, ['submit'])).toBeNull();
+    expect(canResubmit(q)).toBe(false);
+  });
 });
 
 describe('findUnansweredQuestion', () => {
@@ -90,6 +100,16 @@ describe('findUnansweredQuestion', () => {
     expect(isQuestionCorrect(q)).toBe(false);
     expect(isQuestionIncorrect(q)).toBe(true);
     expect(findUnansweredQuestion([q])).toBe(q);
+  });
+
+  it('teks .state "Tidak benar" dianggap incorrect, bukan correct', () => {
+    const q = que(
+      '<div class="info"><div class="state">Tidak benar</div></div>' +
+      '<textarea>kode</textarea><button>Check</button>',
+      'que coderunner'
+    );
+    expect(isQuestionCorrect(q)).toBe(false);
+    expect(isQuestionIncorrect(q)).toBe(true);
   });
 
   it('lewati soal correct, pilih soal berikutnya yang belum dijawab', () => {

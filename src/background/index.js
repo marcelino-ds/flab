@@ -3,6 +3,7 @@
 
 import { getProvider } from '../shared/providers.js';
 import { solveViaApi } from '../shared/api-client.js';
+import { isCurrentRequest, requestKey } from '../shared/session-guard.js';
 
 // Daftar KANONIK semua key state sesi (HARUS identik dengan SESSION_KEYS di popup.js).
 // TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
@@ -10,10 +11,32 @@ const STALE_KEYS = [
   'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
   'activeMode', 'batchPrompt', 'ai', 'current', 'total',
   'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
+  'sessionId', 'activeRequestId',
   'providerTabId', 'providerTabAi'
 ];
 
+const apiControllers = new Map();
+
+function abortApi(key) {
+  if (!key) return;
+  const ctrl = apiControllers.get(key);
+  if (ctrl) {
+    ctrl.abort();
+    apiControllers.delete(key);
+  }
+}
+
+function abortAllApis() {
+  for (const ctrl of apiControllers.values()) ctrl.abort();
+  apiControllers.clear();
+}
+
+function currentStorage(cb) {
+  chrome.storage.local.get(['isBatching', 'sessionId', 'activeRequestId', 'batchTabId', 'current', 'total'], cb);
+}
+
 function clearStaleSession(reason) {
+  abortAllApis();
   chrome.storage.local.remove(STALE_KEYS, () => {
     console.log(`[FLAB BG] Stale session cleared (${reason}).`);
   });
@@ -40,7 +63,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status !== 'complete') return;
   if (!tab.url || !isInjectableUrl(tab.url)) return;
 
-  chrome.storage.local.get(['isBatching', 'batchTabId', 'activeMode', 'batchPrompt', 'ai'], d => {
+  chrome.storage.local.get(['isBatching', 'batchTabId', 'activeMode', 'batchPrompt', 'ai', 'sessionId'], d => {
     if (!d.isBatching || d.batchTabId !== tabId) return;
 
     chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }, () => {
@@ -50,6 +73,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       }
       chrome.tabs.sendMessage(tabId, {
         action: 'START',
+        sessionId: d.sessionId,
         ai: d.ai || 'gemini',
         mode: d.activeMode || 'solve',
         prompt: d.batchPrompt || '',
@@ -59,6 +83,56 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     });
   });
 });
+
+function samePayloadIdentity(a, b) {
+  return !!a && !!b && a.sessionId === b.sessionId && a.requestId === b.requestId;
+}
+
+function removePayloadIfCurrent(identity, pendingTabId) {
+  chrome.storage.local.get(['flabPayload', 'pendingTabId'], cur => {
+    if (samePayloadIdentity(cur.flabPayload, identity) && cur.pendingTabId === pendingTabId) {
+      chrome.storage.local.remove(['flabPayload', 'pendingTabId']);
+    }
+  });
+}
+
+function relayProgress(d) {
+  chrome.runtime.sendMessage({
+    action: 'PROGRESS_UPDATE',
+    current: d.current || '?',
+    total: d.total || '?',
+  }, () => { void chrome.runtime.lastError; });
+}
+
+function relayAnswerToLms(d, answer, identity) {
+  relayProgress(d);
+  if (d.batchTabId) {
+    chrome.tabs.sendMessage(d.batchTabId, {
+      action: 'FILL_ANSWER',
+      sessionId: identity.sessionId,
+      requestId: identity.requestId,
+      data: answer,
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn('[FLAB BG] sendMessage to LMS tab error:', chrome.runtime.lastError.message);
+      }
+    });
+  }
+}
+
+function relayRetryToLms(d, identity) {
+  if (d.batchTabId) {
+    chrome.tabs.sendMessage(d.batchTabId, {
+      action: 'RETRY_SOLVE',
+      sessionId: identity.sessionId,
+      requestId: identity.requestId,
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.warn('[FLAB BG] sendMessage RETRY_SOLVE error:', chrome.runtime.lastError.message);
+      }
+    });
+  }
+}
 
 // ── Message bus ───────────────────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -87,40 +161,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep channel open for async response
   }
 
-  // Gemini → LMS answer bridge
+  // Provider → LMS answer bridge
   if (msg.action === 'SOLVER_JSON_RESULT') {
-    chrome.storage.local.get(['batchTabId', 'current', 'total'], d => {
-      chrome.runtime.sendMessage({
-        action: 'PROGRESS_UPDATE',
-        current: d.current || '?',
-        total: d.total || '?'
-      }, () => { if(chrome.runtime.lastError){} });
-
-      if (d.batchTabId) {
-        chrome.tabs.sendMessage(d.batchTabId, { action: 'FILL_ANSWER', data: msg.data }, () => {
-          if (chrome.runtime.lastError) {
-            console.warn('[FLAB BG] sendMessage to LMS tab error:', chrome.runtime.lastError.message);
-          }
-        });
+    currentStorage(d => {
+      if (!isCurrentRequest(d, msg)) {
+        console.log('[FLAB BG] Drop SOLVER_JSON_RESULT stale.');
+        return;
       }
+      relayAnswerToLms(d, msg.data, msg);
       // Tab persisten: JANGAN tutup tab provider setelah jawaban diekstrak. Tab
       // dipakai ulang untuk soal berikutnya (turn baru di chat yang sama).
     });
     return true;
   }
 
-  // Sinyal timeout dari Gemini → relay retry ke LMS tab
+  // Sinyal timeout dari provider → relay retry ke LMS tab
   if (msg.action === 'SOLVER_TIMEOUT') {
-    chrome.storage.local.get(['batchTabId'], d => {
-      if (d.batchTabId) {
-        chrome.tabs.sendMessage(d.batchTabId, { action: 'RETRY_SOLVE' }, () => {
-          if (chrome.runtime.lastError) {
-            console.warn('[FLAB BG] sendMessage RETRY_SOLVE error:', chrome.runtime.lastError.message);
-          }
-        });
+    currentStorage(d => {
+      if (!isCurrentRequest(d, msg)) {
+        console.log('[FLAB BG] Drop SOLVER_TIMEOUT stale.');
+        return;
       }
+      relayRetryToLms(d, msg);
       // Tab hang → tutup & lupakan, agar retry membuka tab provider yang segar
       // (chat lama mungkin macet/stream tak selesai). Bukan jalur sukses normal.
+      if (sender.tab?.id) {
+        chrome.storage.local.remove(['providerTabId', 'providerTabAi']);
+        setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
+          if (chrome.runtime.lastError) { /* tab sudah tutup */ }
+        }), 700);
+      }
+    });
+    return true;
+  }
+
+  // Provider setup failure → retry current request from LMS and refresh provider tab.
+  if (msg.action === 'PROVIDER_SETUP_FAILED') {
+    currentStorage(d => {
+      if (!isCurrentRequest(d, msg)) {
+        console.log('[FLAB BG] Drop PROVIDER_SETUP_FAILED stale.');
+        return;
+      }
+      console.warn(`[FLAB BG] Provider setup failed (${msg.providerId || '?'}:${msg.stage || '?'})`);
+      relayRetryToLms(d, msg);
       if (sender.tab?.id) {
         chrome.storage.local.remove(['providerTabId', 'providerTabAi']);
         setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
@@ -136,81 +219,159 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // sebagai turn baru di chat yang sama (NEW_PAYLOAD) tanpa reload. Ini buang biaya
   // cold-load SPA tiap soal dan memberi model konteks percobaan sebelumnya saat retry.
   if (msg.action === 'OPEN_AI') {
-    const payload = msg.payload;
-    const wantAi = payload?.ai || 'gemini';
+    const payload = msg.payload || {};
+    const identity = {
+      sessionId: msg.sessionId ?? payload.sessionId,
+      requestId: msg.requestId ?? payload.requestId,
+    };
+    const keyForRequest = requestKey(identity);
+    const wantAi = payload.ai || 'gemini';
     const provider = getProvider(wantAi);
     const providerUrl = provider.url;
 
-    // ── Mode API (opsional) ──────────────────────────────────────────────────
-    // Bila user mengaktifkan Mode API & ada key untuk provider ini, jawab via fetch
-    // langsung — tanpa tab. Bila gagal/tak ada key, jatuh ke jalur tab di bawah.
-    chrome.storage.local.get(['apiMode', `apiKey_${wantAi}`], cfg => {
-      const key = cfg[`apiKey_${wantAi}`];
-      if (cfg.apiMode && key && provider.api) {
-        solveViaApi(provider, key, payload)
-          .then(answer => relayAnswerToLms(answer))
-          .catch(err => {
-            console.warn('[FLAB BG] API mode gagal, fallback ke jalur tab:', err.message);
-            openOrReuseTab();
-          });
+    currentStorage(d => {
+      if (!isCurrentRequest(d, identity)) {
+        console.log('[FLAB BG] Drop OPEN_AI stale.');
         return;
       }
-      openOrReuseTab();
+
+      // Request baru menyupersede API request lama; tab-path masih dijaga oleh requestId.
+      for (const key of [...apiControllers.keys()]) {
+        if (key !== keyForRequest) abortApi(key);
+      }
+
+      // ── Mode API (opsional) ──────────────────────────────────────────────────
+      // Bila user mengaktifkan Mode API & ada key untuk provider ini, jawab via fetch
+      // langsung — tanpa tab. Bila gagal/tak ada key, jatuh ke jalur tab di bawah.
+      chrome.storage.local.get(['apiMode', `apiKey_${wantAi}`], cfg => {
+        currentStorage(fresh => {
+          if (!isCurrentRequest(fresh, identity)) {
+            console.log('[FLAB BG] Drop OPEN_AI after config load: stale.');
+            return;
+          }
+
+          const apiKey = cfg[`apiKey_${wantAi}`];
+          if (cfg.apiMode && apiKey && provider.api) {
+            abortApi(keyForRequest);
+            const ctrl = new AbortController();
+            apiControllers.set(keyForRequest, ctrl);
+            solveViaApi(provider, apiKey, payload, { signal: ctrl.signal })
+              .then(answer => {
+                apiControllers.delete(keyForRequest);
+                currentStorage(latest => {
+                  if (!isCurrentRequest(latest, identity)) {
+                    console.log('[FLAB BG] Drop API result stale.');
+                    return;
+                  }
+                  relayAnswerToLms(latest, answer, identity);
+                });
+              })
+              .catch(err => {
+                apiControllers.delete(keyForRequest);
+                if (err?.name === 'AbortError') return;
+                currentStorage(latest => {
+                  if (!isCurrentRequest(latest, identity)) {
+                    console.log('[FLAB BG] Drop API fallback stale.');
+                    return;
+                  }
+                  console.warn('[FLAB BG] API mode gagal, fallback ke jalur tab:', err?.message || err);
+                  openOrReuseTab(identity);
+                });
+              });
+            return;
+          }
+          openOrReuseTab(identity);
+        });
+      });
     });
 
-    function relayAnswerToLms(answer) {
-      chrome.storage.local.get(['batchTabId', 'current', 'total'], d => {
-        chrome.runtime.sendMessage({
-          action: 'PROGRESS_UPDATE', current: d.current || '?', total: d.total || '?',
-        }, () => { void chrome.runtime.lastError; });
-        if (d.batchTabId) {
-          chrome.tabs.sendMessage(d.batchTabId, { action: 'FILL_ANSWER', data: answer }, () => {
-            void chrome.runtime.lastError;
-          });
+    function openOrReuseTab(identityForPayload) {
+      currentStorage(latest => {
+        if (!isCurrentRequest(latest, identityForPayload)) {
+          console.log('[FLAB BG] Drop provider-tab launch stale.');
+          return;
         }
-      });
-    }
+        chrome.storage.local.get(['providerTabId', 'providerTabAi'], d => {
+          currentStorage(now => {
+            if (!isCurrentRequest(now, identityForPayload)) {
+              console.log('[FLAB BG] Drop provider-tab launch after tab lookup: stale.');
+              return;
+            }
 
-    function openOrReuseTab() {
-    chrome.storage.local.get(['providerTabId', 'providerTabAi'], d => {
-      const createFresh = () => {
-        const launch = () => chrome.storage.local.set({ flabPayload: payload }, () => {
-          // active:true → tab provider dibuka & DIFOKUS. Gemini (Angular SPA) menunda
-          // render saat tab di background → editor tak siap, injeksi gagal, stuck.
-          // Setelah soal terkirim, injector memicu REFOCUS_LMS untuk balik ke iLab.
-          chrome.tabs.create({ url: providerUrl, active: true }, newTab => {
-            chrome.storage.local.set({
-              pendingTabId: newTab.id,
-              providerTabId: newTab.id,
-              providerTabAi: wantAi,
+            const createFresh = () => {
+              const launch = () => {
+                currentStorage(beforeLaunch => {
+                  if (!isCurrentRequest(beforeLaunch, identityForPayload)) {
+                    console.log('[FLAB BG] Drop provider-tab fresh launch stale.');
+                    return;
+                  }
+                  chrome.storage.local.set({ flabPayload: payload }, () => {
+                    currentStorage(afterPayload => {
+                      if (!isCurrentRequest(afterPayload, identityForPayload)) {
+                        removePayloadIfCurrent(identityForPayload, afterPayload.pendingTabId);
+                        console.log('[FLAB BG] Drop provider-tab create after payload write: stale.');
+                        return;
+                      }
+                      // active:true → tab provider dibuka & DIFOKUS. Gemini (Angular SPA) menunda
+                      // render saat tab di background → editor tak siap, injeksi gagal, stuck.
+                      // Setelah soal terkirim, injector memicu REFOCUS_LMS untuk balik ke iLab.
+                      chrome.tabs.create({ url: providerUrl, active: true }, newTab => {
+                        currentStorage(afterCreate => {
+                          if (!isCurrentRequest(afterCreate, identityForPayload)) {
+                            chrome.tabs.remove(newTab.id, () => { void chrome.runtime.lastError; });
+                            return;
+                          }
+                          chrome.storage.local.set({
+                            pendingTabId: newTab.id,
+                            providerTabId: newTab.id,
+                            providerTabAi: wantAi,
+                          });
+                        });
+                      });
+                    });
+                  });
+                });
+              };
+              // Tutup tab lama (provider beda / sesi lama) sebelum buka yang baru.
+              if (d.providerTabId) {
+                chrome.tabs.remove(d.providerTabId, () => { void chrome.runtime.lastError; launch(); });
+              } else {
+                launch();
+              }
+            };
+
+            const canReuse = d.providerTabId && d.providerTabAi === wantAi;
+            if (!canReuse) { createFresh(); return; }
+
+            // Tab masih ada? Validasi sebelum reuse — user bisa saja menutupnya.
+            chrome.tabs.get(d.providerTabId, tab => {
+              if (chrome.runtime.lastError || !tab) { createFresh(); return; }
+              currentStorage(current => {
+                if (!isCurrentRequest(current, identityForPayload)) {
+                  console.log('[FLAB BG] Drop provider-tab reuse stale.');
+                  return;
+                }
+                // Fokus tab provider dulu: Gemini SPA menunda render di background → editor
+                // tak siap & NEW_PAYLOAD gagal inject. Setelah terkirim, REFOCUS_LMS balik ke iLab.
+                chrome.tabs.update(d.providerTabId, { active: true }, () => { void chrome.runtime.lastError; });
+                chrome.storage.local.set({ flabPayload: payload, pendingTabId: d.providerTabId }, () => {
+                  currentStorage(afterPayload => {
+                    if (!isCurrentRequest(afterPayload, identityForPayload)) {
+                      removePayloadIfCurrent(identityForPayload, afterPayload.pendingTabId);
+                      console.log('[FLAB BG] Drop provider-tab reuse after payload write: stale.');
+                      return;
+                    }
+                    chrome.tabs.sendMessage(d.providerTabId, { action: 'NEW_PAYLOAD', ...identityForPayload }, () => {
+                      // Tab hidup tapi injector tak merespons (mis. user navigasi keluar) → buka ulang.
+                      if (chrome.runtime.lastError) createFresh();
+                    });
+                  });
+                });
+              });
             });
           });
         });
-        // Tutup tab lama (provider beda / sesi lama) sebelum buka yang baru.
-        if (d.providerTabId) {
-          chrome.tabs.remove(d.providerTabId, () => { void chrome.runtime.lastError; launch(); });
-        } else {
-          launch();
-        }
-      };
-
-      const canReuse = d.providerTabId && d.providerTabAi === wantAi;
-      if (!canReuse) { createFresh(); return; }
-
-      // Tab masih ada? Validasi sebelum reuse — user bisa saja menutupnya.
-      chrome.tabs.get(d.providerTabId, tab => {
-        if (chrome.runtime.lastError || !tab) { createFresh(); return; }
-        // Fokus tab provider dulu: Gemini SPA menunda render di background → editor
-        // tak siap & NEW_PAYLOAD gagal inject. Setelah terkirim, REFOCUS_LMS balik ke iLab.
-        chrome.tabs.update(d.providerTabId, { active: true }, () => { void chrome.runtime.lastError; });
-        chrome.storage.local.set({ flabPayload: payload, pendingTabId: d.providerTabId }, () => {
-          chrome.tabs.sendMessage(d.providerTabId, { action: 'NEW_PAYLOAD' }, () => {
-            // Tab hidup tapi injector tak merespons (mis. user navigasi keluar) → buka ulang.
-            if (chrome.runtime.lastError) createFresh();
-          });
-        });
       });
-    });
     }
     return true;
   }
@@ -249,10 +410,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // Sinyal batal penuh dari user — bersihkan SEMUA state sesi
   if (msg.action === 'STOP_PROCESS') {
-    chrome.storage.local.get(['pendingTabId', 'batchTabId', 'providerTabId'], d => {
+    chrome.storage.local.get(['pendingTabId', 'batchTabId', 'providerTabId', 'sessionId', 'activeRequestId'], d => {
+      const senderTabId = sender.tab?.id ?? null;
+      const hasIdentity = !!(msg.sessionId || msg.requestId);
+      const identityMatches = hasIdentity &&
+        d.sessionId === msg.sessionId &&
+        d.activeRequestId === msg.requestId;
+      const senderIsCurrentSessionTab = senderTabId &&
+        (senderTabId === d.batchTabId || senderTabId === d.providerTabId || senderTabId === d.pendingTabId);
+      if (!hasIdentity || !identityMatches || !senderIsCurrentSessionTab) {
+        console.log('[FLAB BG] Drop STOP_PROCESS stale/untrusted.');
+        return;
+      }
+
+      abortAllApis();
+
       // Forward kill signal to LMS tab to instantly stop polling
       if (d.batchTabId) {
-        chrome.tabs.sendMessage(d.batchTabId, { action: 'STOP_PROCESS' }, () => {
+        chrome.tabs.sendMessage(d.batchTabId, {
+          action: 'STOP_PROCESS',
+          sessionId: d.sessionId,
+          requestId: d.activeRequestId,
+        }, () => {
           if (chrome.runtime.lastError) { /* ignore if tab is closed */ }
         });
       }

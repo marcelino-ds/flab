@@ -3,6 +3,8 @@
 'use strict';
 
 import { escapeHtml, sleep } from '../shared/util.js';
+import { makeId } from '../shared/id.js';
+import { isCurrentRequest } from '../shared/session-guard.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
 import { detectPlatform, detectMoodleQuiz, detectQuestionType } from './platform.js';
 import { getExistingCode, syncAceToTextarea } from './ace-editor.js';
@@ -20,7 +22,7 @@ import {
   moodleFillCodeRunner, moodleFillMatch, genericFillInQuestion,
 } from './moodle-fill.js';
 import { recordOutcome, summarize } from './session-stats.js';
-import { checkIfCorrect } from './grading.js';
+import { checkIfCorrect, officialGradeSignature } from './grading.js';
 
 // Guard idempotensi: bila content.js sudah ter-inject di dokumen ini, hentikan
 // SEBELUM deklarasi const apa pun agar re-injeksi tidak melempar "already declared".
@@ -81,11 +83,11 @@ const TIMEOUTS = {
 
     if (msg.action === 'START') return handleStart(msg);
 
-    // Untuk FILL_ANSWER dan RETRY, pastikan isBatching masih true.
-    // Jika user sudah klik batal, abaikan respon yang telat dari AI.
-    chrome.storage.local.get(['isBatching'], d => {
-      if (!d.isBatching) {
-        console.log(`[FLAB] Mengabaikan aksi ${msg.action} karena proses telah dibatalkan.`);
+    // Untuk FILL_ANSWER dan RETRY, pastikan sesi/request masih current.
+    // Jika user sudah klik batal atau request sudah superseded, abaikan respon telat.
+    chrome.storage.local.get(['isBatching', 'sessionId', 'activeRequestId'], d => {
+      if (!isCurrentRequest(d, msg)) {
+        console.log(`[FLAB] Mengabaikan aksi ${msg.action} karena request sudah stale/batal.`);
         return;
       }
       if (msg.action === 'FILL_ANSWER') executeFillAnswer(msg.data);
@@ -110,7 +112,8 @@ const TIMEOUTS = {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── Router ─────────────────────────────────────────────────────────────────────
-async function handleStart({ ai, mode, prompt }) {
+async function handleStart({ ai, mode, prompt, sessionId }) {
+  if (sessionId) await chrome.storage.local.set({ sessionId });
   if (mode === 'solve') {
     await chrome.storage.local.set({ solveRetryCount: 0 });
     return handleSolve(ai, prompt);
@@ -229,11 +232,12 @@ function wireOverlayButtons(ui) {
   });
 
   const stopBtn = ui.querySelector('#pai-stop');
-  stopBtn.addEventListener('click', () => {
+  stopBtn.addEventListener('click', async () => {
     window.__flabAborted = true; // INSTANT ABORT FLAG
     try {
+      const d = await storageGet(['sessionId', 'activeRequestId']);
       chrome.storage.local.set({ isBatching: false });
-      chrome.runtime.sendMessage({ action: 'STOP_PROCESS' }); // Matikan tab AI jika sedang terbuka
+      chrome.runtime.sendMessage({ action: 'STOP_PROCESS', sessionId: d.sessionId, requestId: d.activeRequestId }); // Matikan tab AI jika sedang terbuka
     } catch (e) {
       console.warn('[FLAB] Context invalidated. Extension reloaded?', e);
     }
@@ -302,6 +306,14 @@ async function handleSolve(ai, prompt, isRetry = false) {
   const ui = renderUI(ai, prompt);
   const platform = detectPlatform();
   const isMoodlePlatform = platform === 'moodle';
+
+  if (!isMoodlePlatform) {
+    setStatus('[Error] Konteks Moodle hilang. Sesi dihentikan agar jawaban lama tidak diterapkan di halaman lain.', ui);
+    window.__flabAborted = true;
+    await chrome.storage.local.set({ isBatching: false });
+    setTimeout(() => ui?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
+    return;
+  }
 
   if (isMoodlePlatform) {
     if (document.readyState !== 'complete') {
@@ -416,7 +428,7 @@ async function handleSolve(ai, prompt, isRetry = false) {
       if (!(await isStillBatching())) return;
       const dataUrl = await captureTab();
       if (dataUrl) {
-        dispatch(ai, { type: 'image', dataUrl, prompt: combinedPrompt });
+        dispatch(ai, { type: 'solve_image', dataUrl, prompt: combinedPrompt });
       } else {
         // Final fallback: teks saja
         if (!questionText) { setStatus('[Error] Resolusi fallback tangkapan layar gagal, teks pertanyaan kosong.', ui); return; }
@@ -825,6 +837,7 @@ async function moodleCheckAndNavigate(queEl, status) {
     window.addEventListener('beforeunload', unloadListener);
     window.addEventListener('unload', unloadListener);
 
+    const beforeCheckSig = officialGradeSignature(queEl);
     fireClick(checkBtn);
 
     let ajaxDone = false;
@@ -837,11 +850,9 @@ async function moodleCheckAndNavigate(queEl, status) {
         window.removeEventListener('unload', unloadListener);
         return;
       }
-      const stateTxt = (queEl.querySelector('.info .state, .state')?.innerText || '').toLowerCase();
-      const stateGraded = /correct|incorrect|\bbenar\b|\bsalah\b/.test(stateTxt) && !/not\s*yet/.test(stateTxt);
-      if (queEl.classList.contains('correct') || queEl.classList.contains('incorrect') ||
-        queEl.querySelector('.outcome') || queEl.classList.contains('complete') ||
-        queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || stateGraded) {
+      const freshDuringPoll = document.getElementById(queEl.id) || queEl;
+      const afterCheckSig = officialGradeSignature(freshDuringPoll);
+      if (afterCheckSig && afterCheckSig !== beforeCheckSig) {
         ajaxDone = true;
         break;
       }
@@ -852,8 +863,15 @@ async function moodleCheckAndNavigate(queEl, status) {
     window.removeEventListener('unload', unloadListener);
 
     if (!ajaxDone) {
-      status('⚠️ CHECK selesai, tidak ada respons AJAX yang terdeteksi.');
-    } else {
+      const sameSigQueEl = document.getElementById(queEl.id) || queEl;
+      if (officialGradeSignature(sameSigQueEl)) {
+        ajaxDone = true;
+        status('⚠️ CHECK tidak mengubah status resmi; mengevaluasi status saat ini.');
+      } else {
+        status('⚠️ CHECK selesai, tidak ada respons AJAX yang terdeteksi.');
+      }
+    }
+    if (ajaxDone) {
       await sleep(CHECK_FEEDBACK_DELAY_MS);
       const freshQueEl = document.getElementById(queEl.id) || queEl;
       const feedbackEl = freshQueEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results, .precheck-results') || freshQueEl.querySelector('.answer, .formulation') || freshQueEl;
@@ -906,7 +924,13 @@ async function moodleCheckAndNavigate(queEl, status) {
         const sd = await storageGet(['ai', 'batchPrompt']);
         return handleSolve(sd.ai || 'gemini', sd.batchPrompt || '', true);
       } else {
-        status('📋 CHECK selesai.');
+        await bumpSessionStats('failed');
+        status('⚠️ CHECK selesai, tetapi status nilai resmi belum diketahui. Bot dihentikan agar tidak salah lanjut.');
+        await saveErrorScreenshot(freshQueEl, 'CHECK unknown grade state');
+        chrome.storage.local.set({ isBatching: false });
+        window.__flabAborted = true;
+        setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_LOG_REMOVE);
+        return;
       }
       await sleep(TIMEOUTS.CHECK_DELAY);
     }
@@ -1120,16 +1144,26 @@ function captureTab() {
   );
 }
 
-function dispatch(ai, payload) {
+async function dispatch(ai, payload) {
+  const d = await storageGet(['isBatching', 'sessionId']);
+  if (!d.isBatching || !d.sessionId) return;
+
+  const requestId = makeId('req');
+  const storagePatch = { activeRequestId: requestId };
+
   // Catat progres (current/total) sebelum kirim agar PROGRESS_UPDATE punya angka,
   // bukan "?/?". Dihitung dari quiz-nav Moodle (lintas-halaman) bila ada.
   const prog = computeProgress();
   if (prog) {
-    chrome.storage.local.set({ current: prog.current, total: prog.total });
+    storagePatch.current = prog.current;
+    storagePatch.total = prog.total;
     const pEl = document.getElementById('pai-progress');
     if (pEl) pEl.textContent = `${prog.current}/${prog.total}`;
   }
-  chrome.runtime.sendMessage({ action: 'OPEN_AI', payload: { ai, ...payload } });
+
+  await chrome.storage.local.set(storagePatch);
+  const fullPayload = { ai, ...payload, sessionId: d.sessionId, requestId };
+  chrome.runtime.sendMessage({ action: 'OPEN_AI', sessionId: d.sessionId, requestId, payload: fullPayload });
 }
 
 function storageGet(keys) {

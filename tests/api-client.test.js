@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { __test } from '../src/shared/api-client.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { solveViaApi, __test } from '../src/shared/api-client.js';
 
 const { splitDataUrl, normalizeAnswer, parseJsonLoose, buildUserPrompt } = __test;
+
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe('splitDataUrl', () => {
   it('memisahkan mime & base64 dari dataURL valid', () => {
@@ -38,8 +40,8 @@ describe('parseJsonLoose', () => {
   it('ekstrak JSON dari code fence', () => {
     expect(parseJsonLoose('teks\n```json\n{"jawaban":"B"}\n```\nlain')).toEqual({ jawaban: 'B' });
   });
-  it('ekstrak objek pertama dari teks bebas', () => {
-    expect(parseJsonLoose('jawabannya: {"jawaban":"C"} selesai')).toEqual({ jawaban: 'C' });
+  it('ekstrak objek jawaban terakhir dari teks bebas', () => {
+    expect(parseJsonLoose('draft: {"jawaban":"A"}\nfinal: {"jawaban":"C"} selesai')).toEqual({ jawaban: 'C' });
   });
   it('mengembalikan null bila tak ada JSON', () => {
     expect(parseJsonLoose('tidak ada json')).toBeNull();
@@ -64,5 +66,26 @@ describe('buildUserPrompt', () => {
     const p = buildUserPrompt({ type: 'image', dataUrl: 'data:image/png;base64,AA', prompt: '' });
     expect(p).toContain('gambar');
     expect(p).not.toContain('Berikut soalnya');
+  });
+});
+
+
+describe('solveViaApi', () => {
+  it('meneruskan AbortSignal ke fetch provider', async () => {
+    const ctrl = new AbortController();
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: '{"jawaban":"A","index_pilihan":1}' }] } }] }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(solveViaApi(
+      { id: 'gemini', api: { kind: 'gemini', model: 'gemini-test' } },
+      'key',
+      { type: 'solve_text', text: 'soal' },
+      { signal: ctrl.signal }
+    )).resolves.toEqual({ jawaban: 'A', index_pilihan: 1 });
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(ctrl.signal);
   });
 });

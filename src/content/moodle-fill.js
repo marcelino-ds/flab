@@ -72,10 +72,44 @@ export function moodleFillMultichoice(queEl, originalJaw, jaw, idxHint, status) 
 
     if (chosen) { select(chosen); matchCount++; }
   } else {
-    // ── Multi-select: cocokkan tiap jawaban via teks (index_pilihan = 0) ──────
+    // ── Multi-select: sinkronkan SET tepat. Jawaban retry bisa berbeda dari ceklis
+    // lama; hapus opsi stale agar CHECK berikutnya tidak membawa jawaban sebelumnya.
+    const wanted = new Set();
+    let resolvedCount = 0;
     for (let k = 0; k < jawArr.length; k++) {
       const opt = findByText(jawArr[k], jawNormArr[k]);
-      if (opt && !opt.input.checked) { select(opt); matchCount++; }
+      if (opt) { wanted.add(opt.input); resolvedCount++; }
+    }
+
+    for (const opt of options) {
+      const shouldCheck = wanted.has(opt.input);
+      if (opt.input.checked !== shouldCheck) {
+        if (shouldCheck) {
+          moodleClickRadio(opt.input);
+        } else {
+          opt.input.click();
+          opt.input.dispatchEvent(new Event('change', { bubbles: true }));
+          opt.input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        highlightElement(opt.input.closest('.r0,.r1,.r2,.r3,.r4,div,label') || opt.input.parentElement);
+        matchCount++;
+      }
+    }
+
+    const exact = options.every(opt => opt.input.checked === wanted.has(opt.input));
+    if (resolvedCount === jawArr.length && exact) {
+      matchCount = Math.max(matchCount, wanted.size);
+    } else {
+      // Ada jawaban AI yang tidak bisa dipetakan ke opsi. Jangan tinggalkan subset
+      // tercentang lalu terlanjur CHECK sebagai jawaban parsial.
+      for (const opt of options) {
+        if (opt.input.checked) {
+          opt.input.click();
+          opt.input.dispatchEvent(new Event('change', { bubbles: true }));
+          opt.input.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      }
+      matchCount = 0;
     }
   }
 
