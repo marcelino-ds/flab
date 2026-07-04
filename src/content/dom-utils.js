@@ -69,7 +69,12 @@ export function findUnansweredQuestion(questions) {
       // .que dari server: pada kuis deferred-feedback (v-class) kelas tetap
       // "notyetanswered" sampai halaman disubmit, jadi mengandalkan kelas membuat
       // soal yang baru saja diisi terpilih ulang → loop tak berujung.
-      const checkables = [...q.querySelectorAll('input[type="radio"], input[type="checkbox"]')];
+      // value="-1" = sentinel "belum ada pilihan" Moodle untuk single-choice. Ia
+      // bisa dirender sebagai radio tersembunyi yang TETAP checked pada soal yang
+      // belum dijawab → jangan dihitung sebagai jawaban, kalau tidak soal ke-2 dst
+      // di satu halaman tampak "sudah dijawab" & bot langsung pindah halaman.
+      const checkables = [...q.querySelectorAll('input[type="radio"], input[type="checkbox"]')]
+        .filter(el => el.value !== '-1');
       if (checkables.length > 0) {
         if (!checkables.some(r => r.checked)) return q;
         continue;

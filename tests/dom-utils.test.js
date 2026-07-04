@@ -168,6 +168,41 @@ describe('findUnansweredQuestion', () => {
     );
     expect(findUnansweredQuestion([q])).toBe(q);
   });
+
+  // Regresi multi-soal v-class: sentinel value="-1" Moodle (radio "belum ada
+  // pilihan") bisa tetap checked di soal yg belum dijawab. Bila ikut dihitung,
+  // soal ke-2 dst tampak "sudah dijawab" → bot skip & pindah halaman.
+  it('sentinel value="-1" yang checked TIDAK dihitung sebagai jawaban', () => {
+    const q = que(
+      '<input type="radio" name="q" value="-1" checked style="display:none">' +
+      '<div class="answer"><input type="radio" name="q" value="0"><input type="radio" name="q" value="1"></div>',
+      'que multichoice notyetanswered'
+    );
+    expect(findUnansweredQuestion([q])).toBe(q);
+  });
+
+  it('multichoice: sentinel -1 + opsi asli tercentang → dianggap terjawab', () => {
+    const q = que(
+      '<input type="radio" name="q" value="-1" style="display:none">' +
+      '<div class="answer"><input type="radio" name="q" value="0" checked><input type="radio" name="q" value="1"></div>',
+      'que multichoice notyetanswered'
+    );
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('halaman multi-soal: setelah Q1 dijawab, kembalikan Q2 (bukan skip)', () => {
+    const q1 = que(
+      '<input type="radio" name="q1" value="-1" style="display:none">' +
+      '<div class="answer"><input type="radio" name="q1" value="0" checked><input type="radio" name="q1" value="1"></div>',
+      'que multichoice notyetanswered'
+    );
+    const q2 = que(
+      '<input type="radio" name="q2" value="-1" checked style="display:none">' +
+      '<div class="answer"><input type="radio" name="q2" value="0"><input type="radio" name="q2" value="1"></div>',
+      'que multichoice notyetanswered'
+    );
+    expect(findUnansweredQuestion([q1, q2])).toBe(q2);
+  });
 });
 
 describe('getGapFillInputs + buildGapFillTemplate', () => {
