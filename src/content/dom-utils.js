@@ -55,24 +55,46 @@ export function findUnansweredQuestion(questions) {
       if (canResubmit(q)) return q;
       continue;
     }
-    if (cl.contains('notyetanswered') ||
-      cl.contains('invalidanswer') ||
-      !cl.contains('complete')) {
-      return q;
+    // Server menandai jawaban tak valid → wajib diisi ulang.
+    if (cl.contains('invalidanswer')) return q;
+
+    // CodeRunner (iLab): JANGAN tebak sudah-dijawab dari isi input/textarea —
+    // textarea CodeRunner bisa berisi template boilerplate & disembunyikan lewat
+    // CSS (bukan atribut [hidden]), sehingga tampak "terisi" padahal belum
+    // disolve. iLab menilai via CHECK yang meng-update kelas/state, jadi pakai
+    // jalur berbasis kelas di bawah — persis perilaku semula.
+    const isCodeRunner = cl.contains('coderunner') || !!q.querySelector('.ace_editor');
+    if (!isCodeRunner) {
+      // Belum dinilai. Tentukan sudah-dijawab dari STATE INPUT AKTUAL, bukan kelas
+      // .que dari server: pada kuis deferred-feedback (v-class) kelas tetap
+      // "notyetanswered" sampai halaman disubmit, jadi mengandalkan kelas membuat
+      // soal yang baru saja diisi terpilih ulang → loop tak berujung.
+      const checkables = [...q.querySelectorAll('input[type="radio"], input[type="checkbox"]')];
+      if (checkables.length > 0) {
+        if (!checkables.some(r => r.checked)) return q;
+        continue;
+      }
+
+      const textInput = q.querySelector('.answer input[type="text"], .formulation input[type="text"], input[type="text"]');
+      if (textInput) {
+        if (!textInput.value.trim()) return q;
+        continue;
+      }
+
+      // Essay: Atto menulis ke [contenteditable] & baru sync ke textarea saat submit,
+      // jadi cek KEDUANYA — textarea bisa kosong walau jawaban sudah diketik di Atto.
+      const editable = q.querySelector('[contenteditable="true"]');
+      const textArea = q.querySelector('textarea:not([hidden])');
+      if (editable || textArea) {
+        const editableFilled = editable && (editable.textContent || '').trim();
+        const areaFilled = textArea && (textArea.value || '').trim();
+        if (!editableFilled && !areaFilled) return q;
+        continue;
+      }
     }
-    const radios = q.querySelectorAll('input[type="radio"]');
-    if (radios.length > 0 && ![...radios].some(r => r.checked)) {
-      return q;
-    }
-    const textInput = q.querySelector('input[type="text"]');
-    if (textInput && !textInput.value.trim()) {
-      return q;
-    }
-    // Also check for empty textarea (CodeRunner / Essay)
-    const textArea = q.querySelector('textarea:not([hidden])');
-    if (textArea && !textArea.value.trim()) {
-      return q;
-    }
+
+    // Fallback berbasis kelas (CodeRunner & tipe tak dikenal).
+    if (cl.contains('notyetanswered') || !cl.contains('complete')) return q;
   }
   return null;
 }

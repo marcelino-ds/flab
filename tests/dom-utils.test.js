@@ -138,6 +138,36 @@ describe('findUnansweredQuestion', () => {
     expect(isQuestionGraded(q)).toBe(false);
     expect(findUnansweredQuestion([q])).toBe(q);
   });
+
+  // Regresi v-class (deferred-feedback): kelas .que tetap "notyetanswered" sampai
+  // halaman disubmit, jadi soal yang radionya SUDAH dicentang tak boleh terpilih
+  // ulang — kalau iya, dispatch ke AI berulang di soal yang sama (loop).
+  it('multichoice deferred-feedback: radio tercentang walau kelas masih notyetanswered → dilewati', () => {
+    const q = que('<input type="radio" checked>', 'que multichoice notyetanswered');
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('multichoice deferred-feedback: belum ada radio tercentang → dipilih', () => {
+    const q = que('<input type="radio"><input type="radio">', 'que multichoice notyetanswered');
+    expect(findUnansweredQuestion([q])).toBe(q);
+  });
+
+  it('essay deferred-feedback: Atto terisi tapi textarea kosong → dilewati', () => {
+    const q = que(
+      '<div contenteditable="true">jawaban esai saya</div>' +
+      '<textarea></textarea>',
+      'que essay notyetanswered'
+    );
+    expect(findUnansweredQuestion([q])).toBeNull();
+  });
+
+  it('essay deferred-feedback: Atto & textarea kosong → dipilih', () => {
+    const q = que(
+      '<div contenteditable="true"></div><textarea></textarea>',
+      'que essay notyetanswered'
+    );
+    expect(findUnansweredQuestion([q])).toBe(q);
+  });
 });
 
 describe('getGapFillInputs + buildGapFillTemplate', () => {
