@@ -4,17 +4,11 @@
 import { escapeHtml } from '../shared/util.js';
 import { makeId } from '../shared/id.js';
 import { PROVIDERS, DEFAULT_PROVIDER } from '../shared/providers.js';
+import { SESSION_KEYS } from '../shared/session-keys.js';
 
 const $ = id => document.getElementById(id);
 
-// Daftar KANONIK semua key state sesi (HARUS identik dengan STALE_KEYS di background.js).
-// TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
-const SESSION_KEYS = [
-  'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
-  'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
-  'sessionId', 'activeRequestId',
-];
+// SESSION_KEYS sekarang single source of truth (shared/session-keys.js).
 
 // Deteksi Moodle dengan memeriksa penanda DOM di tab aktif (lintas-kampus, bukan
 // per-hostname). Dijalankan via scripting.executeScript di tab yang sedang dibuka.

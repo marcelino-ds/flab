@@ -59,8 +59,8 @@ removed an entire class of "almost-right" mis-fills.
 
 The model's answer is a JSON block embedded in free-form streamed text. The naive
 `text.lastIndexOf('}')` breaks on two common cases: code answers full of `{}`, and
-trailing prose after the block. `json-extract.js` walks from the opening brace
-counting depth while being aware of strings and escapes, returning the true
+trailing prose after the block. `shared/answer-parser.js` walks from the opening
+brace counting depth while being aware of strings and escapes, returning the true
 matching close. This is the single highest-leverage correctness fix — it's what
 makes coding answers parse reliably. It's also pure and unit-tested.
 

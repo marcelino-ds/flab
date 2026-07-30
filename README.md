@@ -34,27 +34,35 @@ The content script is split into focused modules:
 src/
 ├── shared/
 │   ├── util.js              escapeHtml, sleep (shared across surfaces)
-│   └── providers.js         LLM provider registry (Gemini / ChatGPT / Claude)
+│   ├── providers.js         LLM provider registry (Gemini / ChatGPT / Claude)
+│   ├── session-keys.js      single source of truth for session-state keys
+│   ├── session-guard.js     per-request identity (drops stale/late answers)
+│   ├── solve-contract.js    shared prompt contract (tab + API paths)
+│   ├── answer-parser.js     balanced-brace JSON extraction + normalization
+│   ├── api-client.js        direct LLM API path (fetch, no tab)
+│   └── id.js                opaque session/request id generator
 └── content/
     ├── platform.js          Moodle & question-type detection (runtime, host-agnostic)
     ├── html-to-markdown.js  structure-preserving extraction (tables, code, MathJax → LaTeX)
-    ├── ace-editor.js         CodeRunner / Ace editor integration
-    ├── dom-utils.js          pure DOM helpers
-    ├── question-images.js    image detection + composite-canvas stitching
-    ├── moodle-options.js     single-source-of-truth option reading (index-aligned)
-    ├── moodle-fill.js        per-type answer fillers
-    ├── grading.js            precheck/CHECK result parsing (pass/fail)
-    ├── session-stats.js      session summary aggregation
-    └── index.js              flow engine + router + status UI
+    ├── ace-editor.js        CodeRunner / Ace editor integration
+    ├── dom-utils.js         pure DOM helpers
+    ├── question-images.js   image detection + composite-canvas stitching
+    ├── moodle-options.js    single-source-of-truth option reading (index-aligned)
+    ├── moodle-fill.js       per-type answer fillers
+    ├── grading.js           precheck/CHECK result parsing (pass/fail) + selectors
+    ├── session-stats.js     session summary aggregation
+    └── index.js             flow engine + router + status UI
 ```
 
 ## Notable engineering details
 
 - **Index-aligned answer filling.** Option text shown to the LLM is derived from the *same* input elements that get clicked, so the model's chosen index can be trusted as the primary signal rather than relying on fragile text matching.
 - **Balanced-brace JSON extraction.** The LLM response is parsed with a string/escape-aware brace matcher instead of naive `lastIndexOf('}')`, so code answers full of `{}` parse correctly.
-- **Verified fills.** CodeRunner fills read the editor back and compare before claiming success, instead of optimistically assuming a synthetic paste worked.
+- **Verified fills.** CodeRunner fills read the editor back and compare before claiming success, instead of optimistically assuming a synthetic paste worked. The verify check rejects prefix-only matches and leftover template code, so stale partial fills can't masquerade as success.
 - **Idempotent injection.** The content script is guarded so repeated injection never redeclares globals.
 - **Circuit breaker.** A hard per-session cap on solve dispatches prevents runaway retry loops.
+- **Per-request identity (anti-stale).** Every request carries an `sessionId`+`requestId`; handlers drop answers/retries that arrive late or after the user cancels, so a provider tab can't back-fill a stale answer onto the current question.
+- **Single-source-of-truth config.** Session-state keys, CodeRunner result selectors, and the extension version all live in one place — no parallel lists that can silently drift out of sync.
 - **Pluggable LLM backend.** All provider-specific config (URL, DOM selectors, host match) lives in one registry; the injector logic is generic and resolves the provider by host, so adding a backend is a config entry rather than a code change.
 - **Least privilege + MV3 CSP friendly.** No clipboard permissions, no remote fonts, sender-validated message handlers.
 
@@ -74,10 +82,11 @@ Then in `chrome://extensions`: enable Developer Mode → **Load unpacked** → s
 npm test           # vitest run (happy-dom)
 ```
 
-**119 unit tests** across pure/leaf modules: JSON extraction, HTML→Markdown,
+**195 unit tests** across pure/leaf modules: JSON extraction, HTML→Markdown,
 question-type routing, Moodle detection, option alignment, answer fillers (incl.
-XSS escaping), DOM helpers, grading/precheck parsing, session stats, and the
-provider registry. CI runs tests + build on every push.
+XSS escaping + CodeRunner fill verification), DOM helpers, grading/precheck
+parsing, session stats, and the provider registry. CI runs tests + build on every
+push.
 
 DOM-heavy modules that depend on a live Ace editor, canvas rendering, or real
 Moodle markup (`ace-editor`, `question-images`, the flow engine) are intentionally

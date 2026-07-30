@@ -5,8 +5,12 @@
 // injector, then test against the live site to confirm the selectors.
 // Everything provider-specific lives here; the injector logic is generic.
 //
-// NOTE: selectors for chatgpt/claude are best-effort and may need updating when
-// those sites change their DOM. Gemini is the verified, primary provider.
+// Verification: gemini, chatgpt, and claude are all `verified: true` — their
+// selectors have been confirmed against the live sites and drive the injector
+// correctly. Gemini remains the DEFAULT_PROVIDER. Maintenance note: all three
+// sites are SPAs that periodically change their DOM; a `verified` provider can
+// still break if a site ships a layout change, so re-check selectors after such
+// updates rather than assuming they stay valid forever.
 
 export const PROVIDERS = {
   gemini: {

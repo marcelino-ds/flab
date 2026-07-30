@@ -45,21 +45,31 @@ real browser — synthetic DOM cannot reproduce Moodle/Ace/Gemini behavior faith
 
 ```
 src/
-├── shared/util.js            cross-surface helpers (escapeHtml, sleep)
-├── background/index.js       service worker: tabs, message relay, capture
-├── popup/                    launcher UI + error-log viewer
-├── injector/                 runs on the LLM page
-│   ├── index.js              prompt injection + response observation
-│   └── json-extract.js       balanced-brace JSON extraction (unit-tested)
-└── content/                  runs on the LMS page
-    ├── platform.js           platform & question-type detection
-    ├── html-to-markdown.js   structure-preserving extraction (unit-tested)
-    ├── ace-editor.js         CodeRunner / Ace integration
-    ├── dom-utils.js          pure DOM helpers
-    ├── question-images.js    image detection + canvas stitching
-    ├── moodle-options.js     index-aligned option reading
-    ├── moodle-fill.js        per-type answer fillers
-    └── index.js              flow engine + router + status UI
+├── shared/                     cross-surface, pure helpers
+│   ├── util.js                 escapeHtml, sleep
+│   ├── providers.js            LLM provider registry
+│   ├── session-keys.js         single source of truth for session-state keys
+│   ├── session-guard.js        per-request identity (drops stale/late answers)
+│   ├── solve-contract.js       shared prompt contract (tab + API paths)
+│   ├── answer-parser.js        balanced-brace JSON extraction (unit-tested)
+│   ├── api-client.js           direct LLM API path (fetch, no tab)
+│   └── id.js                   session/request id generator
+├── background/index.js         service worker: tabs, message relay, capture, API path
+├── popup/                      launcher UI + error-log viewer
+├── injector/                   runs on the LLM page
+│   ├── index.js                prompt injection + response observation
+│   └── json-extract.js         re-export of shared answer-parser
+└── content/                    runs on the LMS page
+    ├── platform.js             platform & question-type detection
+    ├── html-to-markdown.js     structure-preserving extraction (unit-tested)
+    ├── ace-editor.js           CodeRunner / Ace integration
+    ├── dom-utils.js            pure DOM helpers
+    ├── question-images.js      image detection + canvas stitching
+    ├── moodle-options.js       index-aligned option reading
+    ├── moodle-fill.js          per-type answer fillers (incl. fill verification)
+    ├── grading.js              grading detection + CodeRunner selectors
+    ├── session-stats.js        session summary aggregation
+    └── index.js                flow engine + router + status UI
 ```
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the reasoning behind key design decisions.

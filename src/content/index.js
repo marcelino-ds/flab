@@ -11,7 +11,7 @@ import { getExistingCode, syncAceToTextarea } from './ace-editor.js';
 import {
   findUnansweredQuestion, findButton, setNativeValue,
   highlightElement, fireClick, findNextButton, extractText,
-  scrollToResultElement, waitForBody, computeProgress,
+  scrollToResultElement, waitForBody, computeProgress, waitFor,
   isQuestionCorrect, isQuestionIncorrect, canResubmit,
   getGapFillInputs, buildGapFillTemplate,
 } from './dom-utils.js';
@@ -22,7 +22,7 @@ import {
   moodleFillCodeRunner, moodleFillMatch, genericFillInQuestion,
 } from './moodle-fill.js';
 import { recordOutcome, summarize } from './session-stats.js';
-import { checkIfCorrect, officialGradeSignature } from './grading.js';
+import { checkIfCorrect, officialGradeSignature, CODERUNNER_RESULT_SELECTORS, CHECK_FEEDBACK_SELECTORS } from './grading.js';
 
 // Guard idempotensi: bila content.js sudah ter-inject di dokumen ini, hentikan
 // SEBELUM deklarasi const apa pun agar re-injeksi tidak melempar "already declared".
@@ -120,7 +120,13 @@ async function handleStart({ ai, mode, prompt, sessionId }) {
   }
   if (mode === 'select') return startSnipTool(ai, prompt);
   if (mode === 'text') return dispatch(ai, { type: 'text', text: extractText(), prompt });
-  dispatch(ai, { type: 'image', dataUrl: await captureTab(), prompt });
+  const dataUrl = await captureTab();
+  if (!dataUrl) {
+    const ui = document.getElementById('pai-ui');
+    setStatus('[Error] Gagal menangkap layar (background tak respons). Coba mode teks.', ui);
+    return;
+  }
+  dispatch(ai, { type: 'image', dataUrl, prompt });
 }
 
 // ── Retry handler (dipanggil saat Gemini timeout) ──────────────────────────────
@@ -693,9 +699,7 @@ async function maybeResumeAfterPrecheck(questions, status) {
   // Cocokkan soal: pakai queId bila ada, jika tidak pakai soal pertama yg punya
   // hasil precheck / coderunner result di DOM.
   let queEl = marker.queId ? document.getElementById(marker.queId) : null;
-  const hasResult = q => q?.querySelector(
-    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results'
-  );
+  const hasResult = q => q?.querySelector(CODERUNNER_RESULT_SELECTORS);
   if (!queEl || !hasResult(queEl)) {
     queEl = [...questions].find(hasResult) || queEl;
   }
@@ -765,6 +769,8 @@ async function moodlePrecheckFlow(queEl, status) {
   await sleep(MOODLE_RENDER_DELAY_MS);
 
   // Re-query resultEl jaga-jaga kalau dom Moodle me-replace elementnya (stale DOM)
+  // Re-query jaga-jaga kalau dom Moodle me-replace elementnya (stale DOM). Pakai 2
+  // varian CodeRunner paling umum, fallback ke resultEl hasil waitForPrecheckResult.
   const freshResultEl = queEl.querySelector('.coderunner-test-results, .CodeRunner-test-results') || resultEl;
 
   scrollToResultElement(freshResultEl, queEl, true);
@@ -790,13 +796,7 @@ async function waitForPrecheckResult(queEl, timeout = TIMEOUTS.PRECHECK_RESULT) 
   const start = Date.now();
   while (Date.now() - start < timeout) {
     if (window.__flabAborted) return null;
-    const result =
-      queEl.querySelector('.coderunner-test-results') ||
-      queEl.querySelector('.CodeRunner-test-results') ||
-      queEl.querySelector('.que-coderunner-result') ||
-      queEl.querySelector('.coderunnerresults') ||
-      queEl.querySelector('table.coderunner_test_results') ||
-      queEl.querySelector('.precheck-results');
+    const result = queEl.querySelector(CODERUNNER_RESULT_SELECTORS);
 
     if (result && result.innerText?.trim().length > 5) {
       return result;
@@ -809,10 +809,14 @@ async function waitForPrecheckResult(queEl, timeout = TIMEOUTS.PRECHECK_RESULT) 
 // Clear precheck result from DOM so it doesn't interfere with next precheck
 // PENTING: Tidak hapus [id*="feedback"] atau .outcome global - terlalu agresif.
 function clearPrecheckResult(queEl) {
-  const results = queEl.querySelectorAll(
-    '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results'
-  );
-  results.forEach(el => { try { el.innerHTML = ''; } catch {/***/ } });
+  const results = queEl.querySelectorAll(CODERUNNER_RESULT_SELECTORS);
+  // Operasi best-effort: kegagalan clear bukan fatal, tapi bila diam-diam, hasil
+  // stale bisa racuni pembacaan precheck/CHECK berikutnya. Log ke debug (bukan warn)
+  // agar tertelusuri saat troubleshooting tanpa spam console saat berjalan normal.
+  results.forEach(el => {
+    try { el.innerHTML = ''; }
+    catch (e) { console.debug('[FLAB] clearPrecheckResult: gagal clear satu node:', e?.message || e); }
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -874,6 +878,8 @@ async function moodleCheckAndNavigate(queEl, status) {
     if (ajaxDone) {
       await sleep(CHECK_FEEDBACK_DELAY_MS);
       const freshQueEl = document.getElementById(queEl.id) || queEl;
+      // Scroll umum pasca-CHECK: paling luas (termasuk .precheck-results + .answer/.formulation
+      // fallback) agar area hasil selalu terlihat. Berbeda dari CHECK_FEEDBACK_SELECTORS.
       const feedbackEl = freshQueEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results, .precheck-results') || freshQueEl.querySelector('.answer, .formulation') || freshQueEl;
       scrollToResultElement(feedbackEl, freshQueEl, true);
       await sleep(500);
@@ -892,7 +898,7 @@ async function moodleCheckAndNavigate(queEl, status) {
           status(`❌ CHECK gagal ${MAX_PRECHECK_RETRIES}x. Menghentikan bot.`);
           const questionText = freshQueEl.querySelector('.qtext')?.innerText?.trim() || '';
 
-          const freshFeedbackEl = freshQueEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || freshQueEl;
+          const freshFeedbackEl = freshQueEl.querySelector(CHECK_FEEDBACK_SELECTORS) || freshQueEl;
           scrollToResultElement(freshFeedbackEl, freshQueEl, true);
           await sleep(500);
 
@@ -906,7 +912,7 @@ async function moodleCheckAndNavigate(queEl, status) {
         const nextRetry = retryCount + 1;
         status(`🔄 CHECK gagal. Retry ${nextRetry}/${MAX_PRECHECK_RETRIES}...`);
 
-        const feedbackEl = freshQueEl.querySelector('.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results') || freshQueEl;
+        const feedbackEl = freshQueEl.querySelector(CHECK_FEEDBACK_SELECTORS) || freshQueEl;
         const errText = feedbackEl.innerText || '';
         const existingCode = getExistingCode(freshQueEl) || '';
 
@@ -1053,21 +1059,35 @@ function moodleNavigateNext(status) {
   setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.SUMMARY_UI_REMOVE);
 }
 
-function genericNavigateNext(status) {
+async function genericNavigateNext(status) {
   const nextBtn = findNextButton();
-  if (nextBtn) {
-    status('➡️ Melanjutkan ke soal berikutnya...');
-    fireClick(nextBtn);
-    setTimeout(async () => {
-      const d = await storageGet(['isBatching', 'activeMode', 'ai', 'batchPrompt']);
-      if (d.isBatching && d.activeMode === 'solve') {
-        handleStart({ ai: d.ai ?? 'gemini', mode: 'solve', prompt: d.batchPrompt ?? '' });
-      }
-    }, TIMEOUTS.GENERIC_RETRY_DELAY);
-  } else {
+  if (!nextBtn) {
     status('🏁 Selesai. Tidak ada tombol lanjut.');
     chrome.storage.local.set({ isBatching: false });
     setTimeout(() => document.getElementById('pai-ui')?.remove(), TIMEOUTS.ERROR_UI_REMOVE);
+    return;
+  }
+
+  status('➡️ Melanjutkan ke soal berikutnya...');
+  // Snapshot sebelum klik: dipakai untuk mendeteksi "halaman berikut sudah siap".
+  const beforeQueCount = document.querySelectorAll('.que').length;
+
+  fireClick(nextBtn);
+
+  // Tunggu SINYAL SIAP, bukan delay buta: lanjut begitu konten soal baru muncul
+  // (jumlah .que berubah) ATAU halaman selesai reload. Polling sadar-abort (waitFor);
+  // GENERIC_RETRY_DELAY kini jadi BATAS ATAS, bukan tunggu tetap — lebih responsif
+  // bila halaman cepat, dan tak race bila lambat (vs setTimeout 3200ms tetap).
+  await waitFor(() => {
+    if (window.__flabAborted) return true;
+    if (document.readyState === 'complete' &&
+        document.querySelectorAll('.que').length !== beforeQueCount) return true;
+    return false;
+  }, TIMEOUTS.GENERIC_RETRY_DELAY, 250);
+
+  const d = await storageGet(['isBatching', 'activeMode', 'ai', 'batchPrompt']);
+  if (d.isBatching && d.activeMode === 'solve') {
+    handleStart({ ai: d.ai ?? 'gemini', mode: 'solve', prompt: d.batchPrompt ?? '' });
   }
 }
 
@@ -1138,10 +1158,18 @@ function genericFillAnswer(json) {
 
 // ── Helper DOM murni dipindah ke ./dom-utils.js ─────────────────────────────────
 
+// Ambil screenshot via background. Diberi timeout: bila service worker tak respons
+// (mis. di-restart/invalidated), callback sendMessage tak pernah dipanggil → Promise
+// lama menggantung selamanya & path fallback gambar/snip stuck. Batasi supaya alur
+// bisa jatuh ke null (caller menangani null) alih-alih hang.
+const CAPTURE_TIMEOUT_MS = 8000;
+
 function captureTab() {
-  return new Promise(res =>
+  const capture = new Promise(res =>
     chrome.runtime.sendMessage({ action: 'CAPTURE' }, r => res(r?.dataUrl ?? null))
   );
+  const guard = new Promise(res => setTimeout(() => res(null), CAPTURE_TIMEOUT_MS));
+  return Promise.race([capture, guard]);
 }
 
 async function dispatch(ai, payload) {

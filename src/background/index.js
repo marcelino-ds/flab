@@ -4,16 +4,10 @@
 import { getProvider } from '../shared/providers.js';
 import { solveViaApi } from '../shared/api-client.js';
 import { isCurrentRequest, requestKey } from '../shared/session-guard.js';
+import { STALE_KEYS, SESSION_KEYS, PROVIDER_TAB_KEYS } from '../shared/session-keys.js';
 
-// Daftar KANONIK semua key state sesi (HARUS identik dengan SESSION_KEYS di popup.js).
-// TIDAK termasuk 'errorLogs' & 'prompt' yang sengaja persisten antar sesi.
-const STALE_KEYS = [
-  'isBatching', 'batchTabId', 'pendingTabId', 'flabPayload',
-  'activeMode', 'batchPrompt', 'ai', 'current', 'total',
-  'solveRetryCount', 'precheckError', 'precheckCode', 'precheckRetryCount', 'checkRetryCount', 'solveDispatchCount', 'precheckPending', 'sessionStats',
-  'sessionId', 'activeRequestId',
-  'providerTabId', 'providerTabAi'
-];
+// STALE_KEYS (inti + key tab provider) & SESSION_KEYS (inti) kini single source of
+// truth (shared/session-keys.js) — bukan lagi dua array manual yang harus identik.
 
 const apiControllers = new Map();
 
@@ -186,7 +180,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Tab hang → tutup & lupakan, agar retry membuka tab provider yang segar
       // (chat lama mungkin macet/stream tak selesai). Bukan jalur sukses normal.
       if (sender.tab?.id) {
-        chrome.storage.local.remove(['providerTabId', 'providerTabAi']);
+        chrome.storage.local.remove(PROVIDER_TAB_KEYS);
         setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
           if (chrome.runtime.lastError) { /* tab sudah tutup */ }
         }), 700);
@@ -205,7 +199,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       console.warn(`[FLAB BG] Provider setup failed (${msg.providerId || '?'}:${msg.stage || '?'})`);
       relayRetryToLms(d, msg);
       if (sender.tab?.id) {
-        chrome.storage.local.remove(['providerTabId', 'providerTabAi']);
+        chrome.storage.local.remove(PROVIDER_TAB_KEYS);
         setTimeout(() => chrome.tabs.remove(sender.tab.id, () => {
           if (chrome.runtime.lastError) { /* tab sudah tutup */ }
         }), 700);
@@ -403,7 +397,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         });
       }
       // Pertahankan providerTabId/providerTabAi untuk reuse; buang sisa key sesi lain.
-      chrome.storage.local.remove(STALE_KEYS.filter(k => k !== 'providerTabId' && k !== 'providerTabAi'));
+      chrome.storage.local.remove(SESSION_KEYS);
     });
     return true;
   }

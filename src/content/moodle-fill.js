@@ -310,17 +310,33 @@ export async function moodleFillCodeRunner(queEl, jawaban, status) {
   return false;
 }
 
-// Verifikasi kode benar-benar masuk editor. Bandingkan prefiks non-whitespace agar
-// toleran terhadap normalisasi indentasi/newline oleh Ace, tanpa false-positive kosong.
-function codeFilledOk(queEl, expected) {
+// Verifikasi kode benar-benar masuk editor. Toleran terhadap normalisasi
+// indentasi/newline oleh Ace (bandingkan non-whitespace), tapi TIDAK boleh
+// false-positive saat Ace menyisakan TEMPLATE LAMA yang belum tertimpa.
+//
+// Strategi (mencegah dua kelas bug):
+//  1. Konten inti expected terkandung di actual — bukan hanya prefiks 60 char
+//     (prefiks pendek bisa sama pada template & jawaban, → sukses palsu).
+//  2. actual tidak JAUH lebih panjang dari expected — panjang berlebih = sisa
+//     template lama belum dihapus, alias fill tak benar-benar menggantikan.
+export function codeFilledOk(queEl, expected) {
   const actual = getExistingCode(queEl) || '';
   const norm = s => String(s).replace(/\s+/g, '');
   const a = norm(actual);
   const e = norm(expected);
   if (e.length === 0) return a.length === 0;
   if (a.length === 0) return false;
-  // Anggap berhasil bila editor memuat sebagian besar konten yang diharapkan.
-  return a.includes(e.slice(0, Math.min(e.length, 60))) || a.length >= e.length * 0.9;
+
+  // (1) Cari substring expected yang cukup panjang untuk unik (bukan prefiks pendek).
+  // Mulai dari pertengahan; bila itu terkandung, konten inti jelas sudah masuk.
+  const probeStart = Math.floor(e.length / 3);
+  const probe = e.slice(probeStart, probeStart + 80);
+  if (!probe || !a.includes(probe)) return false;
+
+  // (2) Tolak bila editor jauh lebih panjang → indikasi template lama masih menempel.
+  // Batas 1.5× memberi ruang boilerplate wajar (Ace kadang sisakan sedikit) tanpa
+  // menerima kode yang separuhnya adalah sisa lama.
+  return a.length <= e.length * 1.5;
 }
 
 // ── Generic fill for unknown question types ─────────────────────────────────

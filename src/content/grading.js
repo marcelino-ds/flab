@@ -1,6 +1,19 @@
 // Penentuan benar/salah hasil CHECK Moodle. Fungsi murni baca DOM.
 // Konservatif: bila tidak yakin, kembalikan null agar tidak salah klaim.
 
+// Single source of truth untuk selector hasil CodeRunner/precheck. Markup CodeRunner
+// bergantung tema & sering memuat banyak varian kelas — daftar ini dipakai lintas
+// resume-precheck, waitForPrecheckResult, clearPrecheckResult, dan polling CHECK.
+// Memusatkannya mencegah satu path lupa satu varian (deteksi jadi inkonsisten).
+export const CODERUNNER_RESULT_SELECTORS =
+  '.coderunner-test-results, .CodeRunner-test-results, .que-coderunner-result, .coderunnerresults, table.coderunner_test_results, .precheck-results';
+
+// Selector elemen feedback resmi (bukan hanya CodeRunner) untuk baca error CHECK:
+// .outcome/.feedback Moodle + dua varian CodeRunner yang paling umum muncul saat CHECK.
+// Sengaja lebih sempit dari CODERUNNER_RESULT_SELECTORS (tanpa .precheck-results) agar
+// tidak salah baca tabel precheck STALE sebagai bukti CHECK (sumber loop).
+export const CHECK_FEEDBACK_SELECTORS = '.outcome, .feedback, .coderunner-test-results, .CodeRunner-test-results';
+
 function textOf(el) {
   return (el?.innerText || el?.textContent || '').trim();
 }
